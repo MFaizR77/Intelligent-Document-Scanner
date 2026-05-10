@@ -3,7 +3,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/storage/mongo_service.dart';
-import 'package:tugasbesar_pcd/views/scanner/scanner_screen.dart';
+import 'package:tugasbesar_pcd/views/auth/login_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -41,7 +41,7 @@ class MobileEdgeIntelligenceApp extends StatelessWidget {
         brightness: Brightness.dark,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      home: const ScannerScreen(),
+      home: const LoginScreen(),
     );
   }
 }

@@ -1,79 +1,85 @@
 // lib/services/image_processing/edge_detection.dart
 import 'package:opencv_dart/opencv_dart.dart' as cv;
+
 import '../../config/pcd_params.dart';
 
 class EdgeDetectionService {
   static List<cv.Point> findDocumentCorners(cv.Mat input) {
     if (input.isEmpty) return [];
-    
-    cv.Mat gray;
-    if (input.channels == 3) {
-      gray = cv.Cv2.cvtColor(input, cv.ColorConversionCodes.COLOR_BGR2GRAY);
-    } else {
-      gray = input.clone();
-    }
-    
-    final blurred = cv.Cv2.GaussianBlur(gray, cv.Size(5, 5), 1.5);
-    
-    final edges = cv.Cv2.Canny(
-      blurred,
-      PcdParams.cannyThreshold1,
-      PcdParams.cannyThreshold2,
-    );
-    
-    final contours = cv.Cv2.findContours(
-      edges,
-      cv.RetrievalModes.RETR_EXTERNAL,
-      cv.ContourApproximationModes.APPROX_SIMPLE,
-    );
-    
-    cv.Contour? documentContour;
-    double maxArea = PcdParams.minContourArea;
-    
-    for (final contour in contours) {
-      final area = cv.Cv2.contourArea(contour);
-      if (area > maxArea) {
-        final epsilon = 0.02 * cv.Cv2.arcLength(contour, true);
-        final approx = cv.Cv2.approxPolyDP(contour, epsilon, true);
-        
+
+    cv.Mat? gray;
+    cv.Mat? blurred;
+    cv.Mat? edges;
+    cv.Contours? contours;
+    cv.VecVec4i? hierarchy;
+    cv.VecPoint? bestApprox;
+
+    try {
+      gray = input.channels == 3
+          ? cv.cvtColor(input, cv.COLOR_BGR2GRAY)
+          : input.clone();
+      blurred = cv.gaussianBlur(gray, (5, 5), 1.5);
+      edges = cv.canny(
+        blurred,
+        PcdParams.cannyThreshold1,
+        PcdParams.cannyThreshold2,
+      );
+
+      final contourResult = cv.findContours(
+        edges,
+        cv.RETR_EXTERNAL,
+        cv.CHAIN_APPROX_SIMPLE,
+      );
+      contours = contourResult.$1;
+      hierarchy = contourResult.$2;
+
+      var maxArea = PcdParams.minContourArea;
+      for (final contour in contours) {
+        final area = cv.contourArea(contour);
+        if (area <= maxArea) {
+          continue;
+        }
+
+        final epsilon = 0.02 * cv.arcLength(contour, true);
+        final approx = cv.approxPolyDP(contour, epsilon, true);
         if (approx.length == 4) {
+          bestApprox?.dispose();
+          bestApprox = approx;
           maxArea = area;
-          documentContour = approx;
+        } else {
+          approx.dispose();
         }
       }
+
+      if (bestApprox == null) {
+        return [];
+      }
+
+      final points = bestApprox.map((p) => cv.Point(p.x, p.y)).toList();
+      return _orderCorners(points);
+    } finally {
+      bestApprox?.dispose();
+      hierarchy?.dispose();
+      contours?.dispose();
+      edges?.dispose();
+      blurred?.dispose();
+      gray?.dispose();
     }
-    
-    List<cv.Point> result = [];
-    if (documentContour != null) {
-      result = _orderCorners(documentContour.toList());
-    }
-    
-    // Cleanup
-    gray.dispose();
-    blurred.dispose();
-    edges.dispose();
-    for (final c in contours) c.dispose();
-    
-    return result;
   }
 
   static List<cv.Point> _orderCorners(List<cv.Point> pts) {
     if (pts.length != 4) return pts;
-    
-    // Sort logic to return [TL, TR, BR, BL]
+
     pts.sort((a, b) => a.x.compareTo(b.x));
-    
-    final leftMost = [pts[0], pts[1]];
-    final rightMost = [pts[2], pts[3]];
-    
-    leftMost.sort((a, b) => a.y.compareTo(b.y));
+
+    final leftMost = [pts[0], pts[1]]..sort((a, b) => a.y.compareTo(b.y));
+    final rightMost = [pts[2], pts[3]]..sort((a, b) => a.y.compareTo(b.y));
+
     final tl = leftMost[0];
     final bl = leftMost[1];
-    
-    rightMost.sort((a, b) => a.y.compareTo(b.y));
     final tr = rightMost[0];
     final br = rightMost[1];
-    
+
     return [tl, tr, br, bl];
   }
 }

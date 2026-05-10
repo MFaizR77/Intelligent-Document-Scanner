@@ -9,7 +9,7 @@ class PcdParams {
 
   // CLAHE Enhancement
   static const double claheClipLimit = 2.0;
-  
+
   // Adaptive Thresholding
   static const int adaptiveBlockSize = 11;
   static const double adaptiveC = 2.0;
