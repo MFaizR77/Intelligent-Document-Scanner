@@ -8,7 +8,6 @@ import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/controllers/scanner_controller.dart';
 
 import 'package:tugasbesar_pcd/views/processing/processing_screen.dart';
-import 'package:tugasbesar_pcd/views/scanner/camera_plan_screen.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 import 'package:tugasbesar_pcd/widgets/scanner/document_edge_overlay.dart';
 import 'package:tugasbesar_pcd/widgets/scanner/scanner_controls.dart';
@@ -36,36 +35,15 @@ class _ScannerScreenState extends State<ScannerScreen> {
     super.dispose();
   }
 
-  Future<void> _openCameraPlan() async {
+  Future<void> _initializeCamera() async {
     if (!_controller.isCameraReady) {
       await _controller.initializeCameraFlow();
-      if (!_controller.isCameraReady || !mounted) {
-        return;
-      }
     }
-
-    final result = await Navigator.of(context).push<CameraPlanResult>(
-      MaterialPageRoute<CameraPlanResult>(
-        builder: (_) => CameraPlanScreen(
-          currentPlan: _controller.documentPlan,
-          currentAutoCapture: _controller.autoCaptureEnabled,
-        ),
-      ),
-    );
-
-    if (result == null) {
-      return;
-    }
-
-    _controller.updatePlan(
-      plan: result.documentPlan,
-      autoCapture: result.autoCaptureEnabled,
-    );
   }
 
-  void _captureOrOpenPlan() {
+  void _captureDocument() {
     if (!_controller.isCameraReady) {
-      _controller.initializeCameraFlow();
+      _initializeCamera();
       return;
     }
 
@@ -73,10 +51,7 @@ class _ScannerScreenState extends State<ScannerScreen> {
       Navigator.of(
         context,
       ).push(MaterialPageRoute<void>(builder: (_) => const ProcessingScreen()));
-      return;
     }
-
-    _openCameraPlan();
   }
 
   @override
@@ -105,12 +80,9 @@ class _ScannerScreenState extends State<ScannerScreen> {
                   bottom: 0,
                   child: ScannerControls(
                     isReady: _controller.isDocumentReady,
-                    autoCaptureEnabled: _controller.autoCaptureEnabled,
-                    plan: _controller.documentPlan,
                     flashEnabled: _controller.flashEnabled,
                     onFlash: _controller.toggleFlash,
-                    onCapture: _captureOrOpenPlan,
-                    onPlan: _openCameraPlan,
+                    onCapture: _captureDocument,
                   ),
                 ),
                 if (_controller.isLoadingCamera)
@@ -157,21 +129,26 @@ class _CameraStage extends StatelessWidget {
         controller.nativeCameraController;
 
     if (controller.isCameraReady && nativeController != null) {
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          CameraPreview(nativeController),
-          DocumentEdgeOverlay(
-            corners: controller.documentCorners,
-            isReady: controller.isDocumentReady,
+      return Center(
+        child: AspectRatio(
+          aspectRatio: 1 / nativeController.value.aspectRatio,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              CameraPreview(nativeController),
+              DocumentEdgeOverlay(
+                corners: controller.documentCorners,
+                isReady: controller.isDocumentReady,
+              ),
+              if (controller.enhancedPreview != null)
+                Positioned(
+                  right: 20,
+                  bottom: 210,
+                  child: _EnhancedPreview(bytes: controller.enhancedPreview!),
+                ),
+            ],
           ),
-          if (controller.enhancedPreview != null)
-            Positioned(
-              right: 20,
-              bottom: 210,
-              child: _EnhancedPreview(bytes: controller.enhancedPreview!),
-            ),
-        ],
+        ),
       );
     }
 

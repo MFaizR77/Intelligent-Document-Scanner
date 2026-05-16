@@ -1,85 +1,139 @@
-// lib/services/image_processing/edge_detection.dart
+import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../../config/pcd_params.dart';
 
 class EdgeDetectionService {
-  static List<cv.Point> findDocumentCorners(cv.Mat input) {
-    if (input.isEmpty) return [];
+  static const (int, int) _gaussianKernel = (5, 5);
+  static const double _gaussianSigma = 1.5;
+
+  static Map<String, dynamic> findDocumentCorners(cv.Mat input) {
+    cv.setNumThreads(0);
+    if (input.isEmpty) return {'corners': [], 'isPerfect': false};
 
     cv.Mat? gray;
     cv.Mat? blurred;
     cv.Mat? edges;
+    cv.Mat? dilated;
     cv.Contours? contours;
-    cv.VecVec4i? hierarchy;
-    cv.VecPoint? bestApprox;
+    cv.Mat? kernel;
 
     try {
-      gray = input.channels == 3
-          ? cv.cvtColor(input, cv.COLOR_BGR2GRAY)
-          : input.clone();
-      blurred = cv.gaussianBlur(gray, (5, 5), 1.5);
-      edges = cv.canny(
-        blurred,
-        PcdParams.cannyThreshold1,
-        PcdParams.cannyThreshold2,
-      );
+      gray = _toGrayscale(input);
+      blurred = _applyGaussianBlur(gray);
+      
+      // 1. Threshold normal (50, 150) agar tidak terlalu peka pada tekstur novel/ramai
+      edges = cv.canny(blurred, 50, 150);
+
+      // 2. DILATE: Menebalkan dan menyambungkan tepi kertas yang samar
+      kernel = cv.getStructuringElement(cv.MORPH_RECT, (3, 3));
+      dilated = cv.dilate(edges, kernel);
 
       final contourResult = cv.findContours(
-        edges,
+        dilated,
         cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE,
       );
       contours = contourResult.$1;
-      hierarchy = contourResult.$2;
 
-      var maxArea = PcdParams.minContourArea;
+      if (contours.isEmpty) return {'corners': [], 'isPerfect': false};
+
+      // 3. SET BATAS MINIMAL 5% (Fokus ke dokumen riil, hiraukan debu/pantulan lampu)
+      final minArea = (input.cols * input.rows) * 0.05;
+      double largestArea = minArea;
+      cv.Contour? largestContour;
+
       for (final contour in contours) {
         final area = cv.contourArea(contour);
-        if (area <= maxArea) {
-          continue;
-        }
-
-        final epsilon = 0.02 * cv.arcLength(contour, true);
-        final approx = cv.approxPolyDP(contour, epsilon, true);
-        if (approx.length == 4) {
-          bestApprox?.dispose();
-          bestApprox = approx;
-          maxArea = area;
-        } else {
-          approx.dispose();
+        if (area > largestArea) {
+          largestArea = area;
+          largestContour = contour;
         }
       }
 
-      if (bestApprox == null) {
-        return [];
+      if (largestContour == null) return {'corners': [], 'isPerfect': false};
+
+      final perimeter = cv.arcLength(largestContour, true);
+      final approx = cv.approxPolyDP(largestContour, 0.03 * perimeter, true);
+
+      List<cv.Point> points;
+      bool isPerfect = false;
+
+      if (approx.length == 4) {
+        // Jika menemukan 4 sudut pas, set isPerfect jadi TRUE (Hijau)
+        points = approx.map((point) => cv.Point(point.x, point.y)).toList();
+        isPerfect = true; 
+      } else {
+        // FALLBACK: Kurung objek dengan kotak merah fleksibel
+        final rotatedRect = cv.minAreaRect(largestContour);
+        final box = cv.boxPoints(rotatedRect);
+        points = box.toList().map((p) => cv.Point(p.x.toInt(), p.y.toInt())).toList();
       }
 
-      final points = bestApprox.map((p) => cv.Point(p.x, p.y)).toList();
-      return _orderCorners(points);
+      approx.dispose();
+      
+      // 4. Mencegah garis menyilang dengan sorting baru
+      final ordered = _orderCorners(points);
+
+      return {
+        'corners': ordered.map((p) => {'x': p.x.toDouble(), 'y': p.y.toDouble()}).toList(),
+        'isPerfect': isPerfect,
+      };
+    } catch (error) {
+      if (PcdParams.logProcessingTime) {
+        debugPrint('[EdgeDetection] Error: $error');
+      }
+      return {'corners': [], 'isPerfect': false};
     } finally {
-      bestApprox?.dispose();
-      hierarchy?.dispose();
       contours?.dispose();
+      kernel?.dispose();
+      dilated?.dispose();
       edges?.dispose();
       blurred?.dispose();
       gray?.dispose();
     }
   }
 
+  // ALGORITMA SORTING SUM & DIFFERENCE (Anti Jam-Pasir)
   static List<cv.Point> _orderCorners(List<cv.Point> pts) {
     if (pts.length != 4) return pts;
 
-    pts.sort((a, b) => a.x.compareTo(b.x));
+    // Titik Kiri-Atas (Top-Left) punya jumlah X+Y terkecil
+    // Titik Kanan-Bawah (Bottom-Right) punya jumlah X+Y terbesar
+    pts.sort((a, b) => (a.x + a.y).compareTo(b.x + b.y));
+    final tl = pts.first;
+    final br = pts.last;
 
-    final leftMost = [pts[0], pts[1]]..sort((a, b) => a.y.compareTo(b.y));
-    final rightMost = [pts[2], pts[3]]..sort((a, b) => a.y.compareTo(b.y));
-
-    final tl = leftMost[0];
-    final bl = leftMost[1];
-    final tr = rightMost[0];
-    final br = rightMost[1];
+    // Sisa 2 titik diurutkan pakai selisih Y-X
+    // Kanan-Atas (Top-Right) punya selisih terkecil
+    // Kiri-Bawah (Bottom-Left) punya selisih terbesar
+    final remaining = [pts[1], pts[2]];
+    remaining.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
+    final tr = remaining.first;
+    final bl = remaining.last;
 
     return [tl, tr, br, bl];
+  }
+
+  static cv.Mat _toGrayscale(cv.Mat input) {
+    try {
+      if (input.channels == 3) {
+        return cv.cvtColor(input, cv.COLOR_BGR2GRAY);
+      } else if (input.channels == 1) {
+        return input.clone();
+      } else {
+        return cv.cvtColor(input, cv.COLOR_BGR2GRAY);
+      }
+    } catch (_) {
+      return cv.Mat.empty();
+    }
+  }
+
+  static cv.Mat _applyGaussianBlur(cv.Mat gray) {
+    try {
+      return cv.gaussianBlur(gray, _gaussianKernel, _gaussianSigma);
+    } catch (_) {
+      return cv.Mat.empty();
+    }
   }
 }

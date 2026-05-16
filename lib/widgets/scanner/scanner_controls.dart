@@ -6,21 +6,15 @@ class ScannerControls extends StatelessWidget {
   const ScannerControls({
     super.key,
     required this.isReady,
-    required this.autoCaptureEnabled,
-    required this.plan,
     required this.flashEnabled,
     required this.onFlash,
     required this.onCapture,
-    required this.onPlan,
   });
 
   final bool isReady;
-  final bool autoCaptureEnabled;
-  final String plan;
   final bool flashEnabled;
   final VoidCallback onFlash;
   final VoidCallback onCapture;
-  final VoidCallback onPlan;
 
   @override
   Widget build(BuildContext context) {
@@ -36,11 +30,9 @@ class ScannerControls extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _PlanChips(activePlan: plan, onPlan: onPlan),
-          const SizedBox(height: 28),
           Text(
             isReady
-                ? 'Tahan stabil â€¢ auto-capture dalam 1 detik'
+                ? 'Dokumen siap di-capture'
                 : 'Miringkan kamera untuk meluruskan dokumen',
             textAlign: TextAlign.center,
             style: TextStyle(
@@ -79,52 +71,11 @@ class ScannerControls extends StatelessWidget {
                   ),
                 ),
               ),
-              AppIconButton(icon: Icons.history, onPressed: onPlan),
+              const SizedBox(width: 44),
             ],
           ),
         ],
       ),
-    );
-  }
-}
-
-class _PlanChips extends StatelessWidget {
-  const _PlanChips({required this.activePlan, required this.onPlan});
-
-  final String activePlan;
-  final VoidCallback onPlan;
-
-  @override
-  Widget build(BuildContext context) {
-    const plans = ['Auto', 'A4', 'Buku', 'KTP'];
-    return Wrap(
-      spacing: 10,
-      children: plans.map((plan) {
-        final active = activePlan == plan;
-        return InkWell(
-          onTap: onPlan,
-          borderRadius: BorderRadius.circular(999),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            decoration: BoxDecoration(
-              color: active
-                  ? AppColors.primary.withValues(alpha: 0.16)
-                  : Colors.black45,
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(
-                color: active ? AppColors.primary : AppColors.border,
-              ),
-            ),
-            child: Text(
-              plan,
-              style: TextStyle(
-                color: active ? AppColors.primary : Colors.white54,
-                fontSize: 13,
-              ),
-            ),
-          ),
-        );
-      }).toList(),
     );
   }
 }
