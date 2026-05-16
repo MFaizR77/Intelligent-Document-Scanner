@@ -3,7 +3,7 @@ import 'package:hive_flutter/hive_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/storage/mongo_service.dart';
-import 'package:tugasbesar_pcd/views/auth/login_screen.dart';
+import 'package:tugasbesar_pcd/views/splash/splash_screen.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,6 +17,7 @@ void main() async {
     Hive.registerAdapter(ScanResultAdapter());
   }
   await Hive.openBox<ScanResult>('scan_results');
+  await Hive.openBox('settings'); // Box for onboarding state
 
   // Initialize MongoDB (online) for Phase 1 baseline.
   // App keeps running even if MongoDB is not configured/reachable.
@@ -41,7 +42,7 @@ class MobileEdgeIntelligenceApp extends StatelessWidget {
         brightness: Brightness.dark,
         visualDensity: VisualDensity.adaptivePlatformDensity,
       ),
-      home: const LoginScreen(),
+      home: const SplashScreen(),
     );
   }
 }
