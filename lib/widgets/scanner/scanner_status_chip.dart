@@ -31,7 +31,7 @@ class ScannerStatusChip extends StatelessWidget {
             Icon(Icons.circle, size: 9, color: color),
             const SizedBox(width: 8),
             Text(
-              isReady ? 'Dokumen terdeteksi' : statusText,
+              isReady ? 'Dokumen terdeteksi' : 'Luruskan dokumen...',
               style: TextStyle(
                 color: color,
                 fontSize: 13,

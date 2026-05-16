@@ -157,13 +157,40 @@ class _CameraStage extends StatelessWidget {
         controller.nativeCameraController;
 
     if (controller.isCameraReady && nativeController != null) {
+      final size = MediaQuery.of(context).size;
+      final deviceRatio = size.width / size.height;
+      double cameraRatio = nativeController.value.aspectRatio;
+      if (cameraRatio > 1) cameraRatio = 1 / cameraRatio;
+
+      double scale = 1.0;
+      if (deviceRatio > cameraRatio) {
+         scale = deviceRatio / cameraRatio;
+      } else {
+         scale = cameraRatio / deviceRatio;
+      }
+
       return Stack(
         fit: StackFit.expand,
         children: [
-          CameraPreview(nativeController),
-          DocumentEdgeOverlay(
-            corners: controller.documentCorners,
-            isReady: controller.isDocumentReady,
+          ClipRect(
+            child: Transform.scale(
+              scale: scale,
+              child: Center(
+                child: AspectRatio(
+                  aspectRatio: cameraRatio,
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(nativeController),
+                      DocumentEdgeOverlay(
+                        corners: controller.documentCorners,
+                        isReady: controller.isDocumentReady,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
           ),
           if (controller.enhancedPreview != null)
             Positioned(

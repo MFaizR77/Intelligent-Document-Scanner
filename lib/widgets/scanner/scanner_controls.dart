@@ -38,16 +38,26 @@ class ScannerControls extends StatelessWidget {
         children: [
           _PlanChips(activePlan: plan, onPlan: onPlan),
           const SizedBox(height: 28),
-          Text(
-            isReady
-                ? 'Tahan stabil â€¢ auto-capture dalam 1 detik'
-                : 'Miringkan kamera untuk meluruskan dokumen',
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: isReady ? Colors.white54 : AppColors.danger,
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-            ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (!isReady)
+                const Padding(
+                  padding: EdgeInsets.only(right: 6),
+                  child: Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 16),
+                ),
+              Text(
+                isReady
+                    ? 'Tahan stabil · auto-capture dalam 1 detik'
+                    : 'Miringkan kamera untuk meluruskan dokumen',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: isReady ? Colors.white54 : AppColors.danger,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
           ),
           const SizedBox(height: 16),
           Row(
