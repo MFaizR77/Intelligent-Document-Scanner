@@ -4,7 +4,17 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 import '../../config/pcd_params.dart';
 
 class EdgeDetectionService {
-  static List<cv.Point> findDocumentCorners(cv.Mat input) {
+  /// Versi cepat untuk realtime stream (Y-plane grayscale).
+  /// Pakai profile [PcdParams.auto] supaya tidak tergantung mode user.
+  static List<cv.Point> findDocumentCorners(cv.Mat input) =>
+      findDocumentCornersWith(input, PcdParams.auto);
+
+  /// Versi yang menerima profile eksplisit, dipakai pada jalur capture
+  /// hi-res yang tahu mode dokumen yang user pilih.
+  static List<cv.Point> findDocumentCornersWith(
+    cv.Mat input,
+    PcdProfile profile,
+  ) {
     if (input.isEmpty) return [];
 
     cv.Mat? gray;
@@ -18,11 +28,12 @@ class EdgeDetectionService {
       gray = input.channels == 3
           ? cv.cvtColor(input, cv.COLOR_BGR2GRAY)
           : input.clone();
-      blurred = cv.gaussianBlur(gray, (5, 5), 1.5);
+      final ksize = profile.gaussianKernel | 1; // pastikan ganjil
+      blurred = cv.gaussianBlur(gray, (ksize, ksize), profile.gaussianSigma);
       edges = cv.canny(
         blurred,
-        PcdParams.cannyThreshold1,
-        PcdParams.cannyThreshold2,
+        profile.cannyThreshold1,
+        profile.cannyThreshold2,
       );
 
       final contourResult = cv.findContours(
@@ -33,7 +44,9 @@ class EdgeDetectionService {
       contours = contourResult.$1;
       hierarchy = contourResult.$2;
 
-      var maxArea = PcdParams.minContourArea;
+      final imageArea = (input.cols * input.rows).toDouble();
+      var maxArea = profile.minContourAreaRatio * imageArea;
+
       for (final contour in contours) {
         final area = cv.contourArea(contour);
         if (area <= maxArea) {
