@@ -1,5 +1,3 @@
-import 'dart:typed_data';
-
 import 'package:camera/camera.dart';
 
 import 'package:flutter/material.dart';
@@ -141,26 +139,30 @@ class _ScannerScreenState extends State<ScannerScreen> {
                   top: 26,
                   left: 22,
                   right: 22,
-                  child: ScannerStatusChip(
-                    isReady: _controller.isDocumentReady,
-                    statusText: _controller.statusText,
-                  ),
+                  child: _controller.isCameraReady
+                      ? ScannerStatusChip(
+                          isReady: _controller.isDocumentReady,
+                          statusText: _controller.statusText,
+                        )
+                      : const SizedBox.shrink(),
                 ),
                 Positioned(
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  child: ScannerControls(
-                    isReady: _controller.isDocumentReady,
-                    autoCaptureEnabled: _controller.autoCaptureEnabled,
-                    plan: _controller.documentPlan,
-                    flashEnabled: _controller.flashEnabled,
-                    captureProgress: _autoCapture.progress,
-                    onFlash: _controller.toggleFlash,
-                    onCapture: _captureOrOpenPlan,
-                    onPlan: _openCameraPlan,
-                    onGallery: _openGallery,
-                  ),
+                  child: _controller.isCameraReady
+                      ? ScannerControls(
+                          isReady: _controller.isDocumentReady,
+                          autoCaptureEnabled: _controller.autoCaptureEnabled,
+                          plan: _controller.documentPlan,
+                          flashEnabled: _controller.flashEnabled,
+                          captureProgress: _autoCapture.progress,
+                          onFlash: _controller.toggleFlash,
+                          onCapture: _captureOrOpenPlan,
+                          onPlan: _openCameraPlan,
+                          onGallery: _openGallery,
+                        )
+                      : const SizedBox.shrink(),
                 ),
                 if (_controller.isLoadingCamera)
                   const Positioned.fill(
@@ -206,48 +208,24 @@ class _CameraStage extends StatelessWidget {
         controller.nativeCameraController;
 
     if (controller.isCameraReady && nativeController != null) {
-      final size = MediaQuery.of(context).size;
-      final deviceRatio = size.width / size.height;
-      double cameraRatio = nativeController.value.aspectRatio;
-      if (cameraRatio > 1) cameraRatio = 1 / cameraRatio;
-
-      double scale = 1.0;
-      if (deviceRatio > cameraRatio) {
-        scale = deviceRatio / cameraRatio;
-      } else {
-        scale = cameraRatio / deviceRatio;
-      }
-
-      return Stack(
-        fit: StackFit.expand,
-        children: [
-          ClipRect(
-            child: Transform.scale(
-              scale: scale,
-              child: Center(
-                child: AspectRatio(
-                  aspectRatio: cameraRatio,
-                  child: Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      CameraPreview(nativeController),
-                      DocumentEdgeOverlay(
-                        corners: controller.documentCorners,
-                        isReady: controller.isDocumentReady,
-                      ),
-                    ],
-                  ),
-                ),
+      // Layout HAKIM: preview di-fit pakai aspect ratio asli kamera lalu
+      // di-center. Area sekitar otomatis diisi oleh Scaffold.background
+      // (hitam) → efek "background dihitamkan". Edge detection overlay
+      // tepat berada di atas preview, bukan tergerus oleh crop cover.
+      return Center(
+        child: AspectRatio(
+          aspectRatio: 1 / nativeController.value.aspectRatio,
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              CameraPreview(nativeController),
+              DocumentEdgeOverlay(
+                corners: controller.documentCorners,
+                isReady: controller.isDocumentReady,
               ),
-            ),
+            ],
           ),
-          if (controller.enhancedPreview != null)
-            Positioned(
-              right: 20,
-              bottom: 210,
-              child: _EnhancedPreview(bytes: controller.enhancedPreview!),
-            ),
-        ],
+        ),
       );
     }
 
@@ -276,34 +254,6 @@ class _CameraStage extends StatelessWidget {
               size: 64,
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _EnhancedPreview extends StatelessWidget {
-  const _EnhancedPreview({required this.bytes});
-
-  final List<int> bytes;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 72,
-      height: 96,
-      padding: const EdgeInsets.all(4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.72),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.7)),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(10),
-        child: Image.memory(
-          Uint8List.fromList(bytes),
-          fit: BoxFit.cover,
-          gaplessPlayback: true,
         ),
       ),
     );

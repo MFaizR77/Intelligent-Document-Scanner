@@ -3,6 +3,8 @@ import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/views/home/home_shell.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 
+/// Login screen — offline mode (Hive only). Tidak ada autentikasi server,
+/// jadi screen ini cuma intro card + tombol "Mulai" yang langsung ke home.
 class LoginScreen extends StatelessWidget {
   const LoginScreen({super.key});
 
@@ -24,7 +26,7 @@ class LoginScreen extends StatelessWidget {
             children: [
               const SizedBox(height: 30),
               const _BrandHeader(),
-              const SizedBox(height: 42),
+              const SizedBox(height: 56),
               const Text.rich(
                 TextSpan(
                   children: [
@@ -44,66 +46,42 @@ class LoginScreen extends StatelessWidget {
                   fontWeight: FontWeight.w900,
                 ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 14),
               const Text(
-                'Masuk untuk melanjutkan sesi scan-mu.',
+                'Aplikasi berjalan offline. Semua scan disimpan di perangkat '
+                'lewat Hive — tidak butuh akun, tidak butuh internet.',
                 style: TextStyle(
                   color: Colors.white70,
-                  fontSize: 16,
-                  height: 1.35,
+                  fontSize: 15,
+                  height: 1.4,
                 ),
               ),
-              const SizedBox(height: 34),
-              const _AuthField(label: 'EMAIL', value: 'faiz@polban.ac.id'),
-              const SizedBox(height: 20),
-              const _AuthField(
-                label: 'PASSWORD',
-                value: '••••••••',
-                obscure: true,
+              const SizedBox(height: 36),
+              const _FeatureRow(
+                icon: Icons.bolt_outlined,
+                text: 'Edge detection realtime di kamera',
               ),
               const SizedBox(height: 14),
-              const Align(
-                alignment: Alignment.centerRight,
-                child: Text(
-                  'Lupa password?',
-                  style: TextStyle(
-                    color: AppColors.primary,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
+              const _FeatureRow(
+                icon: Icons.layers_outlined,
+                text: 'Pipeline PCD: warp, shadow removal, enhancement',
               ),
-              const SizedBox(height: 28),
-              AppPrimaryButton(
-                label: 'Masuk',
-                onPressed: () => _enterApp(context),
-              ),
-              const SizedBox(height: 24),
-              const _DividerText(),
-              const SizedBox(height: 22),
-              Row(
-                children: const [
-                  Expanded(
-                    child: _SocialButton(label: 'Google', icon: 'G'),
-                  ),
-                  SizedBox(width: 12),
-                  Expanded(
-                    child: _SocialButton(label: 'GitHub', icon: '●'),
-                  ),
-                ],
+              const SizedBox(height: 14),
+              const _FeatureRow(
+                icon: Icons.lock_outline,
+                text: 'Penyimpanan lokal — privasi sepenuhnya di tangan kamu',
               ),
               const Spacer(),
+              AppPrimaryButton(
+                label: 'Mulai',
+                icon: Icons.arrow_forward,
+                onPressed: () => _enterApp(context),
+              ),
+              const SizedBox(height: 14),
               const Center(
-                child: Text.rich(
-                  TextSpan(
-                    text: 'Belum punya akun? ',
-                    style: TextStyle(color: Colors.white38),
-                    children: [
-                      TextSpan(
-                        text: 'Daftar gratis',
-                        style: TextStyle(color: AppColors.primary),
-                      ),
-                    ],
-                  ),
+                child: Text(
+                  'Versi 0.1 · Tugas Besar PCD',
+                  style: TextStyle(color: Colors.white38, fontSize: 12),
                 ),
               ),
             ],
@@ -148,115 +126,41 @@ class _BrandHeader extends StatelessWidget {
   }
 }
 
-class _AuthField extends StatelessWidget {
-  const _AuthField({
-    required this.label,
-    required this.value,
-    this.obscure = false,
-  });
+class _FeatureRow extends StatelessWidget {
+  const _FeatureRow({required this.icon, required this.text});
 
-  final String label;
-  final String value;
-  final bool obscure;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: Colors.white70,
-            letterSpacing: 2.4,
-            fontSize: 12,
-          ),
-        ),
-        const SizedBox(height: 10),
-        Container(
-          height: 54,
-          padding: const EdgeInsets.symmetric(horizontal: 18),
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(
-              color: label == 'EMAIL'
-                  ? AppColors.primary.withValues(alpha: 0.7)
-                  : AppColors.border,
-            ),
-          ),
-          child: Row(
-            children: [
-              Expanded(
-                child: Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-              if (obscure)
-                const Icon(
-                  Icons.visibility_off_outlined,
-                  color: Colors.white38,
-                  size: 20,
-                ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _DividerText extends StatelessWidget {
-  const _DividerText();
+  final IconData icon;
+  final String text;
 
   @override
   Widget build(BuildContext context) {
     return Row(
-      children: const [
-        Expanded(child: Divider(color: AppColors.border)),
-        Padding(
-          padding: EdgeInsets.symmetric(horizontal: 14),
-          child: Text('atau', style: TextStyle(color: Colors.white38)),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: AppColors.primary.withValues(alpha: 0.14),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Icon(icon, color: AppColors.primary, size: 20),
         ),
-        Expanded(child: Divider(color: AppColors.border)),
-      ],
-    );
-  }
-}
-
-class _SocialButton extends StatelessWidget {
-  const _SocialButton({required this.label, required this.icon});
-
-  final String label;
-  final String icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      height: 50,
-      decoration: BoxDecoration(
-        color: AppColors.surface,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Text(
-            icon,
-            style: TextStyle(
-              color: label == 'Google' ? Colors.redAccent : Colors.white70,
-              fontWeight: FontWeight.w900,
+        const SizedBox(width: 14),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Text(
+              text,
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                height: 1.4,
+              ),
             ),
           ),
-          const SizedBox(width: 10),
-          Text(label, style: const TextStyle(color: Colors.white70)),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

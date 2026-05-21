@@ -37,7 +37,8 @@ class EdgeDetectionService {
   /// Returns a map with:
   /// - `corners` — list of `{x, y}` maps in original-frame pixel coordinates.
   /// - `isPerfect` — true only when a convex quadrilateral with a valid aspect
-  ///   ratio is found.
+  ///   ratio is found. Saat false tapi corners ada, UI bisa menggambar
+  ///   polygon merah sebagai feedback "masih cari".
   /// - `processedWidth` / `processedHeight` — frame dimensions after rotation,
   ///   used by the caller to normalise corners to the [0, 1] ratio space.
   /// - `rotatedMat` — full-resolution [cv.Mat] after rotation, required by
@@ -259,9 +260,7 @@ class EdgeDetectionService {
 
       for (final contour in contours) {
         final area = cv.contourArea(contour);
-        if (area <= maxArea) {
-          continue;
-        }
+        if (area <= maxArea) continue;
 
         final epsilon = 0.02 * cv.arcLength(contour, true);
         final approx = cv.approxPolyDP(contour, epsilon, true);
@@ -274,9 +273,7 @@ class EdgeDetectionService {
         }
       }
 
-      if (bestApprox == null) {
-        return [];
-      }
+      if (bestApprox == null) return [];
 
       final points = bestApprox.map((p) => cv.Point(p.x, p.y)).toList();
       return _orderCornersByExtremes(points);

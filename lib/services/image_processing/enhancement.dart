@@ -188,7 +188,10 @@ class EnhancementService {
       labChannels = cv.split(lab);
 
       clahe = cv.createCLAHE(
-        clipLimit: profile.claheClipLimit,
+        // Clip limit moderat — cukup untuk angkat kontras lokal pada catatan
+        // tanpa over-sharpen artefak. Range 1.8–2.2 adalah sweet spot
+        // untuk dokumen kertas dengan pencahayaan campuran.
+        clipLimit: profile.claheClipLimit.clamp(1.8, 2.2),
         tileGridSize: (profile.claheTileGrid, profile.claheTileGrid),
       );
       lEnhanced = clahe.apply(labChannels[0]);
@@ -204,9 +207,10 @@ class EnhancementService {
       // Bilateral filter: kurangi noise tanpa kabur tepi.
       smoothed = cv.bilateralFilter(bgr, 7, 50, 50);
 
-      // Unsharp mask: sharpened = 1.5*src - 0.5*blur
+      // Unsharp mask: sharpened = 1.4*src - 0.4*blur
+      // Cukup berasa "lifted" tanpa sampai bikin halo / over-sharpen.
       blurred = cv.gaussianBlur(smoothed, (5, 5), 1.0);
-      sharpened = cv.addWeighted(smoothed, 1.5, blurred, -0.5, 0);
+      sharpened = cv.addWeighted(smoothed, 1.4, blurred, -0.4, 0);
 
       return sharpened.clone();
     } finally {

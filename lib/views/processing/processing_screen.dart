@@ -24,7 +24,10 @@ class ProcessingScreen extends StatefulWidget {
 
 class _ProcessingScreenState extends State<ProcessingScreen> {
   Future<ScanArtifact>? _future;
-  final EnhancementMode _mode = EnhancementMode.bw;
+  // Default ke color (CamScanner-style "Original-Enhanced") supaya hasil
+  // tetap natural — BW threshold sering terlalu agresif untuk catatan/buku
+  // yang punya gradasi pensil. User bisa ganti mode di scan_result_screen.
+  final EnhancementMode _mode = EnhancementMode.color;
 
   @override
   void initState() {

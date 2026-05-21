@@ -132,7 +132,12 @@ class IsolateManager {
               : cv.Point(0, 0))
           .toList();
 
+      // Dokumen dianggap "ready" hanya saat detector yakin. Kalau isPerfect
+      // false tapi cornersList tidak kosong, itu kandidat tentative — UI
+      // akan menggambarnya merah supaya user tahu detector sedang melihat
+      // sesuatu, tapi belum boleh trigger auto-capture.
       final hasDocument = isPerfect;
+      final hasCornersToDraw = cornersList.isNotEmpty;
       // Dimensions of the frame after rotation — used to normalise corners.
       final processedWidth  = detectionResult['processedWidth']  as int? ?? mat.cols;
       final processedHeight = detectionResult['processedHeight'] as int? ?? mat.rows;
@@ -158,15 +163,20 @@ class IsolateManager {
       }
 
       // Return corners normalised to the [0.0, 1.0] ratio space for the UI.
+      // Status "ready" hanya kalau detector yakin (isPerfect). Kalau ada
+      // korner tentative, kirim status "searching" tapi tetap dengan korner
+      // supaya overlay merah tergambar sebagai feedback.
       return <String, dynamic>{
-        'corners': cornersList
-            .map((m) => m is Map
-                ? <double>[
-                    (m['x'] as num).toDouble() / processedWidth,
-                    (m['y'] as num).toDouble() / processedHeight,
-                  ]
-                : <double>[0.0, 0.0])
-            .toList(),
+        'corners': hasCornersToDraw
+            ? cornersList
+                .map((m) => m is Map
+                    ? <double>[
+                        (m['x'] as num).toDouble() / processedWidth,
+                        (m['y'] as num).toDouble() / processedHeight,
+                      ]
+                    : <double>[0.0, 0.0])
+                .toList()
+            : <List<double>>[],
         'imageWidth':  processedWidth,
         'imageHeight': processedHeight,
         'status':     hasDocument ? 'ready' : 'searching',

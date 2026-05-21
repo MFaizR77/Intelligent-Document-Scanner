@@ -41,7 +41,7 @@ class AppCameraController {
 
     _controller = CameraController(
       selectedCamera,
-      ResolutionPreset.medium,
+      ResolutionPreset.high,
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );

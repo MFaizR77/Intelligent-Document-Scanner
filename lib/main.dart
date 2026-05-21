@@ -37,6 +37,7 @@ class MobileEdgeIntelligenceApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Scanner Cerdas (PCD)',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.teal,
         brightness: Brightness.dark,
