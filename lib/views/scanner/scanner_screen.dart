@@ -213,9 +213,9 @@ class _CameraStage extends StatelessWidget {
 
       double scale = 1.0;
       if (deviceRatio > cameraRatio) {
-         scale = deviceRatio / cameraRatio;
+        scale = deviceRatio / cameraRatio;
       } else {
-         scale = cameraRatio / deviceRatio;
+        scale = cameraRatio / deviceRatio;
       }
 
       return Stack(
