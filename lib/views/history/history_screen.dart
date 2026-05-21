@@ -1,12 +1,37 @@
+// lib/views/history/history_screen.dart
+//
+// Daftar scan dari Hive (real-time via ValueListenableBuilder).
+// Tap → ScanDetailScreen(result).
+
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:hive/hive.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
-import 'package:tugasbesar_pcd/models/ui_scan_document.dart';
+import 'package:tugasbesar_pcd/models/scan_result.dart';
+import 'package:tugasbesar_pcd/services/storage/scan_repository.dart';
 import 'package:tugasbesar_pcd/views/history/scan_detail_screen.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
-import 'package:tugasbesar_pcd/widgets/document/document_preview_card.dart';
 
-class HistoryScreen extends StatelessWidget {
+class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
+
+  @override
+  State<HistoryScreen> createState() => _HistoryScreenState();
+}
+
+class _HistoryScreenState extends State<HistoryScreen> {
+  String _filter = 'Semua';
+
+  static const _filters = ['Semua', 'A4', 'Buku', 'KTP', 'Auto'];
+
+  List<ScanResult> _applyFilter(List<ScanResult> all) {
+    if (_filter == 'Semua') return all;
+    return all
+        .where((r) => r.documentType.toLowerCase() == _filter.toLowerCase())
+        .toList();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -28,9 +53,9 @@ class HistoryScreen extends StatelessWidget {
                       ),
                     ),
                   ),
-                  AppIconButton(icon: Icons.search, onPressed: () {}),
-                  const SizedBox(width: 10),
-                  AppIconButton(icon: Icons.filter_list, onPressed: () {}),
+                  AppIconButton(icon: Icons.refresh, onPressed: () {
+                    setState(() {});
+                  }),
                 ],
               ),
             ),
@@ -39,28 +64,44 @@ class HistoryScreen extends StatelessWidget {
               child: ListView(
                 padding: const EdgeInsets.symmetric(horizontal: 22),
                 scrollDirection: Axis.horizontal,
-                children: const [
-                  _FilterChip(label: 'Semua', active: true),
-                  _FilterChip(label: 'Dokumen'),
-                  _FilterChip(label: 'Struk'),
-                  _FilterChip(label: 'KTP'),
-                ],
+                children: _filters.map((label) {
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 10),
+                    child: _FilterChip(
+                      label: label,
+                      active: _filter == label,
+                      onTap: () => setState(() => _filter = label),
+                    ),
+                  );
+                }).toList(),
               ),
             ),
             const SizedBox(height: 12),
             Expanded(
-              child: GridView.builder(
-                padding: const EdgeInsets.fromLTRB(22, 0, 22, 24),
-                itemCount: sampleScanDocuments.length,
-                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: 2,
-                  childAspectRatio: 0.75,
-                  crossAxisSpacing: 12,
-                  mainAxisSpacing: 14,
-                ),
-                itemBuilder: (context, index) {
-                  final document = sampleScanDocuments[index];
-                  return _HistoryGridCard(document: document);
+              child: ValueListenableBuilder<Box<ScanResult>>(
+                valueListenable: ScanRepository.instance.listenable(),
+                builder: (context, box, _) {
+                  final list = box.values.toList()
+                    ..sort((a, b) => b.scanDate.compareTo(a.scanDate));
+                  final filtered = _applyFilter(list);
+                  if (filtered.isEmpty) {
+                    return const _EmptyState();
+                  }
+                  return GridView.builder(
+                    padding: const EdgeInsets.fromLTRB(22, 0, 22, 24),
+                    itemCount: filtered.length,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          childAspectRatio: 0.72,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 14,
+                        ),
+                    itemBuilder: (context, index) {
+                      final r = filtered[index];
+                      return _HistoryGridCard(result: r);
+                    },
+                  );
                 },
               ),
             ),
@@ -72,46 +113,63 @@ class HistoryScreen extends StatelessWidget {
 }
 
 class _FilterChip extends StatelessWidget {
-  const _FilterChip({required this.label, this.active = false});
+  const _FilterChip({
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
 
   final String label;
   final bool active;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(right: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 18),
-      decoration: BoxDecoration(
-        color: active
-            ? AppColors.primary.withValues(alpha: 0.12)
-            : Colors.transparent,
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(
-          color: active ? AppColors.primary : AppColors.border,
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(999),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18),
+        decoration: BoxDecoration(
+          color: active
+              ? AppColors.primary.withValues(alpha: 0.12)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(
+            color: active ? AppColors.primary : AppColors.border,
+          ),
         ),
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        label,
-        style: TextStyle(color: active ? AppColors.primary : Colors.white38),
+        alignment: Alignment.center,
+        child: Text(
+          label,
+          style: TextStyle(color: active ? AppColors.primary : Colors.white38),
+        ),
       ),
     );
   }
 }
 
 class _HistoryGridCard extends StatelessWidget {
-  const _HistoryGridCard({required this.document});
+  const _HistoryGridCard({required this.result});
 
-  final UiScanDocument document;
+  final ScanResult result;
+
+  String _formatDate(DateTime d) {
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$day/$m/${d.year}';
+  }
 
   @override
   Widget build(BuildContext context) {
+    final file = File(result.imagePath);
+    final exists = file.existsSync();
+    final pct = (result.confidenceScore * 100).clamp(0, 100).toStringAsFixed(0);
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
           MaterialPageRoute<void>(
-            builder: (_) => ScanDetailScreen(document: document),
+            builder: (_) => ScanDetailScreen(result: result),
           ),
         );
       },
@@ -126,34 +184,77 @@ class _HistoryGridCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
-                child: DocumentPreviewCard(
-                  qualityLabel: document.type == 'KTP'
-                      ? 'KTP'
-                      : '${document.quality}%',
-                  tagColor: document.quality >= 90
-                      ? AppColors.primary
-                      : AppColors.warning,
+              child: ClipRRect(
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(11),
                 ),
+                child: exists
+                    ? Image.file(
+                        file,
+                        fit: BoxFit.cover,
+                        width: double.infinity,
+                        gaplessPlayback: true,
+                      )
+                    : Container(
+                        color: AppColors.elevated,
+                        child: const Center(
+                          child: Icon(
+                            Icons.broken_image,
+                            color: Colors.white24,
+                          ),
+                        ),
+                      ),
               ),
             ),
             Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.all(10),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    document.title,
+                    result.documentType,
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
-                  const SizedBox(height: 4),
+                  const SizedBox(height: 2),
                   Text(
-                    document.date,
-                    style: const TextStyle(color: Colors.white54, fontSize: 12),
+                    '${_formatDate(result.scanDate)}  •  $pct%',
+                    style: const TextStyle(
+                      color: Colors.white54,
+                      fontSize: 11,
+                    ),
                   ),
                 ],
               ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  const _EmptyState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.symmetric(horizontal: 32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.inbox_outlined, color: Colors.white24, size: 64),
+            SizedBox(height: 12),
+            Text(
+              'Belum ada scan',
+              style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+            ),
+            SizedBox(height: 6),
+            Text(
+              'Mulai dari tab Scan untuk membuat dokumen baru.',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.white54),
             ),
           ],
         ),

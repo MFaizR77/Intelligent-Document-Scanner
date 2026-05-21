@@ -1,9 +1,48 @@
+// lib/views/processing/processing_screen.dart
+//
+// Layar yang menjalankan pipeline PCD pada CapturePayload.
+// Setelah selesai → navigasi otomatis ke ScanResultScreen dengan ScanArtifact.
+
 import 'package:flutter/material.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
-import 'package:tugasbesar_pcd/widgets/document/document_preview_card.dart';
+import 'package:tugasbesar_pcd/config/pcd_params.dart';
+import 'package:tugasbesar_pcd/models/capture_payload.dart';
+import 'package:tugasbesar_pcd/models/scan_artifact.dart';
+import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
+import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
+import 'package:tugasbesar_pcd/services/storage/file_service.dart';
+import 'package:tugasbesar_pcd/views/processing/scan_result_screen.dart';
 
-class ProcessingScreen extends StatelessWidget {
-  const ProcessingScreen({super.key});
+class ProcessingScreen extends StatefulWidget {
+  const ProcessingScreen({super.key, required this.payload});
+
+  final CapturePayload payload;
+
+  @override
+  State<ProcessingScreen> createState() => _ProcessingScreenState();
+}
+
+class _ProcessingScreenState extends State<ProcessingScreen> {
+  Future<ScanArtifact>? _future;
+  final EnhancementMode _mode = EnhancementMode.bw;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = _runPipeline();
+  }
+
+  Future<ScanArtifact> _runPipeline() async {
+    final outPath = await FileService.newEnhancedJpegPath();
+    final profile = PcdParams.profileForLabel(widget.payload.documentPlan);
+    return DocumentPipeline.runFromFile(
+      inputPath: widget.payload.rawImagePath,
+      outputPath: outPath,
+      profile: profile,
+      mode: _mode,
+      overrideCorners: widget.payload.suggestedCornersImage,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -16,103 +55,103 @@ class ProcessingScreen extends StatelessWidget {
           style: TextStyle(fontWeight: FontWeight.w900),
         ),
       ),
-      body: ListView(
-        padding: const EdgeInsets.all(28),
-        children: const [
-          Row(
-            children: [
-              Expanded(
-                child: DocumentPreviewCard(
-                  qualityLabel: 'Original',
-                  tagColor: Colors.grey,
-                ),
+      body: FutureBuilder<ScanArtifact>(
+        future: _future,
+        builder: (context, snap) {
+          if (snap.connectionState != ConnectionState.done) {
+            return const _ProcessingState();
+          }
+          if (snap.hasError) {
+            return _ErrorState(
+              message: '${snap.error}',
+              onRetry: () {
+                setState(() {
+                  _future = _runPipeline();
+                });
+              },
+            );
+          }
+          // Sukses → tunda 1 frame lalu pindah ke result screen.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute<void>(
+                builder: (_) => ScanResultScreen(artifact: snap.data!),
               ),
-              SizedBox(width: 0),
-              Expanded(
-                child: DocumentPreviewCard(
-                  qualityLabel: 'Enhanced',
-                  tagColor: AppColors.primary,
-                ),
-              ),
-            ],
-          ),
-          SizedBox(height: 28),
-          _StepTile(
-            label: 'Grayscale + Gaussian Blur',
-            time: '12ms',
-            done: true,
-          ),
-          _StepTile(label: 'Canny Edge Detection', time: '28ms', done: true),
-          _StepTile(label: 'Perspective Correction', time: '45ms', done: true),
-          _StepTile(label: 'Shadow Removal...', active: true),
-          _StepTile(label: 'TFLite Classification'),
-          _StepTile(label: 'Contrast Enhancement'),
-        ],
+            );
+          });
+          return const _ProcessingState();
+        },
       ),
     );
   }
 }
 
-class _StepTile extends StatelessWidget {
-  const _StepTile({
-    required this.label,
-    this.time,
-    this.done = false,
-    this.active = false,
-  });
-
-  final String label;
-  final String? time;
-  final bool done;
-  final bool active;
+class _ProcessingState extends StatelessWidget {
+  const _ProcessingState();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: active
-            ? AppColors.blue.withValues(alpha: 0.12)
-            : AppColors.surface,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: active
-              ? AppColors.blue.withValues(alpha: 0.5)
-              : AppColors.border,
+    return ListView(
+      padding: const EdgeInsets.all(28),
+      children: const [
+        SizedBox(height: 32),
+        Center(
+          child: SizedBox(
+            width: 64,
+            height: 64,
+            child: CircularProgressIndicator(
+              color: AppColors.primary,
+              strokeWidth: 5,
+            ),
+          ),
         ),
-      ),
-      child: Row(
+        SizedBox(height: 24),
+        Center(
+          child: Text(
+            'Menjalankan pipeline PCD',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+          ),
+        ),
+        SizedBox(height: 8),
+        Center(
+          child: Text(
+            'Canny → Contour → Warp → Shadow Removal → Adaptive Threshold',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white54, fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _ErrorState extends StatelessWidget {
+  const _ErrorState({required this.message, required this.onRetry});
+  final String message;
+  final VoidCallback onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          CircleAvatar(
-            radius: 16,
-            backgroundColor: done
-                ? AppColors.primary
-                : active
-                ? AppColors.blue
-                : AppColors.elevated,
-            child: done
-                ? const Icon(Icons.check, color: Colors.black, size: 18)
-                : null,
+          const Icon(Icons.error_outline, color: AppColors.danger, size: 64),
+          const SizedBox(height: 12),
+          const Text(
+            'Pipeline gagal',
+            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
           ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Text(
-              label,
-              style: TextStyle(
-                color: done || active ? Colors.white : Colors.white30,
-                fontWeight: active ? FontWeight.w900 : FontWeight.w600,
-              ),
-            ),
+          const SizedBox(height: 6),
+          Text(
+            message,
+            textAlign: TextAlign.center,
+            style: const TextStyle(color: Colors.white54, fontSize: 12),
           ),
-          if (time != null)
-            Text(
-              time!,
-              style: const TextStyle(
-                color: AppColors.primary,
-                fontWeight: FontWeight.w900,
-              ),
-            ),
+          const SizedBox(height: 18),
+          FilledButton.tonal(onPressed: onRetry, child: const Text('Coba lagi')),
         ],
       ),
     );
