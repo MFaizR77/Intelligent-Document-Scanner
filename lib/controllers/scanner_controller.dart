@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:ui';
 
 import 'package:camera/camera.dart';
@@ -6,6 +7,8 @@ import 'package:flutter/foundation.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:tugasbesar_pcd/controllers/camera_controller.dart';
 import 'package:tugasbesar_pcd/controllers/isolate_manager.dart';
+import 'package:tugasbesar_pcd/models/capture_payload.dart';
+import 'package:tugasbesar_pcd/services/storage/file_service.dart';
 
 class ScannerController extends ChangeNotifier {
   ScannerController({
@@ -22,6 +25,7 @@ class ScannerController extends ChangeNotifier {
   bool permissionDenied = false;
   bool isStreaming = false;
   bool isProcessingFrame = false;
+  bool isCapturing = false;
   bool flashEnabled = false;
 
   String statusText = 'Tekan Mulai Scan untuk membuka kamera';
@@ -31,6 +35,11 @@ class ScannerController extends ChangeNotifier {
   double confidence = 0;
   Uint8List? enhancedPreview;
   List<Offset> documentCorners = const [];
+
+  /// Frame size terakhir yang dipakai isolate (dari Y-plane).
+  /// Berguna untuk konversi koordinat overlay → image saat passing ke crop.
+  int _lastFrameWidth = 0;
+  int _lastFrameHeight = 0;
 
   DateTime _lastFrameSent = DateTime.fromMillisecondsSinceEpoch(0);
 
@@ -100,6 +109,97 @@ class ScannerController extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Ambil foto hi-res, simpan ke app documents, lalu kembalikan payload
+  /// untuk diteruskan ke layar berikutnya (CropScreen / ProcessingScreen).
+  ///
+  /// Penting: stream realtime di-pause selama capture untuk menghindari
+  /// kontensi resource pada plugin camera lama (^0.10.x).
+  Future<CapturePayload?> capturePhoto() async {
+    final controller = nativeCameraController;
+    if (controller == null ||
+        !controller.value.isInitialized ||
+        isCapturing) {
+      return null;
+    }
+
+    isCapturing = true;
+    statusText = 'Mengambil foto...';
+    notifyListeners();
+
+    // Snapshot korner & ukuran frame realtime SEBELUM stop stream, supaya
+    // payload masih membawa hint untuk crop screen.
+    final suggestedCorners = documentCorners.isEmpty
+        ? null
+        : List<Offset>.unmodifiable(documentCorners);
+    final frameW = _lastFrameWidth;
+    final frameH = _lastFrameHeight;
+
+    try {
+      // Pause stream supaya takePicture() tidak konflik di sebagian device.
+      if (controller.value.isStreamingImages) {
+        try {
+          await controller.stopImageStream();
+        } catch (_) {
+          // Kadang stream sudah dihentikan oleh native lifecycle.
+        }
+        isStreaming = false;
+      }
+
+      final XFile shot = await controller.takePicture();
+      final dst = await FileService.newRawJpegPath();
+      await File(shot.path).copy(dst);
+
+      // Best-effort: buang file temp dari plugin camera.
+      try {
+        await File(shot.path).delete();
+      } catch (_) {}
+
+      // Catatan: koordinat realtime ternormalisasi (0..1) terhadap UKURAN
+      // FRAME STREAM (bukan ukuran foto hi-res). Kita simpan saja sebagai
+      // hint relatif; crop_screen akan memetakannya ke koordinat foto saat
+      // foto sudah dimuat.
+      final imageHints = (frameW > 0 && frameH > 0)
+          ? <Offset>[
+              for (final c in (suggestedCorners ?? const <Offset>[]))
+                Offset(c.dx, c.dy),
+            ]
+          : null;
+
+      return CapturePayload(
+        rawImagePath: dst,
+        documentPlan: documentPlan,
+        suggestedCornersImage: imageHints,
+        imageWidth: frameW > 0 ? frameW : null,
+        imageHeight: frameH > 0 ? frameH : null,
+      );
+    } catch (error) {
+      statusText = 'Gagal capture: $error';
+      detectionState = 'error';
+      notifyListeners();
+      return null;
+    } finally {
+      isCapturing = false;
+      notifyListeners();
+    }
+  }
+
+  /// Mulai ulang stream realtime setelah balik dari layar berikutnya.
+  Future<void> resumeDetectionStream() async {
+    final controller = nativeCameraController;
+    if (controller == null || !controller.value.isInitialized) {
+      return;
+    }
+    if (!controller.value.isStreamingImages) {
+      try {
+        await controller.startImageStream(_onCameraImage);
+        isStreaming = true;
+      } catch (error) {
+        statusText = 'Gagal restart stream: $error';
+        notifyListeners();
+      }
+    }
+  }
+
   Future<void> _startDetectionStream() async {
     final controller = nativeCameraController;
     if (controller == null || !controller.value.isInitialized) {
@@ -117,7 +217,7 @@ class ScannerController extends ChangeNotifier {
 
   void _onCameraImage(CameraImage image) {
     final now = DateTime.now();
-    if (!_isolateManager.isReady || isProcessingFrame) {
+    if (!_isolateManager.isReady || isProcessingFrame || isCapturing) {
       return;
     }
 
@@ -127,6 +227,8 @@ class ScannerController extends ChangeNotifier {
 
     isProcessingFrame = true;
     _lastFrameSent = now;
+    _lastFrameWidth = image.width;
+    _lastFrameHeight = image.height;
     final sent = _isolateManager.processFrame(image);
     if (!sent) {
       isProcessingFrame = false;
