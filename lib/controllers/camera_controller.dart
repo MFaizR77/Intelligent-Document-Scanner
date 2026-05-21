@@ -9,6 +9,11 @@ class AppCameraController {
   bool get isInitialized => _controller?.value.isInitialized ?? false;
   bool get isStreamingImages => _controller?.value.isStreamingImages ?? false;
 
+  /// Orientasi sensor kamera dalam derajat (0, 90, 180, 270).
+  /// Digunakan Isolate untuk menentukan arah rotasi Mat sebelum diproses OpenCV.
+  /// Bernilai 0 jika kamera belum diinisialisasi.
+  int get sensorOrientation => _controller?.description.sensorOrientation ?? 0;
+
   Future<void> initialize() async {
     if (_isDisposed) {
       return;

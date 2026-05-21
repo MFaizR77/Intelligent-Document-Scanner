@@ -13,6 +13,8 @@ import '../services/image_processing/enhancement.dart';
 import '../services/image_processing/perspective_transform.dart';
 import '../utils/image_utils.dart';
 
+/// Manages a dedicated [FlutterIsolate] that runs the OpenCV processing
+/// pipeline off the main thread to keep the camera preview at 60 fps.
 @pragma('vm:entry-point')
 class IsolateManager {
   FlutterIsolate? _backgroundIsolate;
@@ -24,12 +26,14 @@ class IsolateManager {
 
   bool get isReady => _backgroundSendPort != null;
 
+  /// Spawns the background isolate and wires the bidirectional [SendPort] channel.
+  ///
+  /// [onResult] is called on the main isolate whenever the background isolate
+  /// returns a processing result.
   Future<void> spawnProcessingIsolate(
     Function(Map<String, dynamic>) onResult,
   ) async {
-    if (_isListening || _isDisposed) {
-      return;
-    }
+    if (_isListening || _isDisposed) return;
 
     _mainPort = ReceivePort();
     _backgroundIsolate = await FlutterIsolate.spawn(
@@ -39,10 +43,7 @@ class IsolateManager {
 
     _isListening = true;
     _mainPortSubscription = _mainPort!.listen((message) {
-      if (_isDisposed) {
-        return;
-      }
-
+      if (_isDisposed) return;
       if (message is SendPort) {
         _backgroundSendPort = message;
       } else if (message is Map) {
@@ -51,11 +52,14 @@ class IsolateManager {
     });
   }
 
-  bool processFrame(CameraImage image) {
+  /// Serialises [image] and forwards it to the background isolate for processing.
+  ///
+  /// [sensorOrientation] (degrees: 0, 90, 180, 270) is forwarded so the isolate
+  /// can derive the correct rotation code without accessing platform APIs.
+  /// Returns `false` if the isolate is not ready or already disposed.
+  bool processFrame(CameraImage image, {required int sensorOrientation}) {
     final sendPort = _backgroundSendPort;
-    if (_isDisposed || sendPort == null || image.planes.isEmpty) {
-      return false;
-    }
+    if (_isDisposed || sendPort == null || image.planes.isEmpty) return false;
 
     final yPlane = image.planes.first;
     sendPort.send(<String, dynamic>{
@@ -63,9 +67,8 @@ class IsolateManager {
       'width': image.width,
       'height': image.height,
       'bytesPerRow': yPlane.bytesPerRow,
-      'bytes': TransferableTypedData.fromList([
-        Uint8List.fromList(yPlane.bytes),
-      ]),
+      'sensorOrientation': sensorOrientation,
+      'bytes': TransferableTypedData.fromList([Uint8List.fromList(yPlane.bytes)]),
     });
     return true;
   }
@@ -77,8 +80,7 @@ class IsolateManager {
 
     receivePort.listen((message) {
       if (message is Map && message['type'] == 'frame') {
-        final result = _processFrame(Map<String, dynamic>.from(message));
-        mainSendPort.send(result);
+        mainSendPort.send(_processFrame(Map<String, dynamic>.from(message)));
       } else if (message is Map && message['type'] == 'dispose') {
         receivePort.close();
       }
@@ -87,98 +89,108 @@ class IsolateManager {
 
   static Map<String, dynamic> _processFrame(Map<String, dynamic> frame) {
     cv.Mat? mat;
-    cv.Mat? rotatedMat;
     cv.Mat? warped;
     cv.Mat? enhanced;
+    // Declared outside try so that detectionResult['rotatedMat'] can be
+    // disposed in the finally block regardless of where an exception occurs.
+    Map<String, dynamic>? detectionResult;
 
     try {
       final width = frame['width'] as int;
       final height = frame['height'] as int;
       final bytesPerRow = frame['bytesPerRow'] as int;
-      final bytes = (frame['bytes'] as TransferableTypedData)
-          .materialize()
-          .asUint8List();
+      final sensorOrientation = frame['sensorOrientation'] as int? ?? 90;
+      final bytes = (frame['bytes'] as TransferableTypedData).materialize().asUint8List();
 
-      // Bersihkan padding bytesPerRow bawaan Android agar gambar tidak rusak
+      // Remove Android's row-stride padding so the Mat is packed correctly.
       final matBytes = bytesPerRow == width
           ? bytes
           : _packYPlaneBytes(bytes, width, height, bytesPerRow);
 
       mat = cv.Mat.fromList(height, width, cv.MatType.CV_8UC1, matBytes);
 
-      // Putar gambar 90 derajat supaya OpenCV memproses secara Portrait
-      rotatedMat = cv.rotate(mat, cv.ROTATE_90_CLOCKWISE);
+      // Map sensor orientation to a cv.rotate constant.
+      // Rotation is intentionally delegated to EdgeDetectionService and applied
+      // *after* downscaling, so only a ~500 px matrix is rotated.
+      final int? rotateCode = switch (sensorOrientation) {
+        90  => cv.ROTATE_90_CLOCKWISE,
+        270 => cv.ROTATE_90_COUNTERCLOCKWISE,
+        180 => cv.ROTATE_180,
+        _   => null,
+      };
 
-      // Jalankan deteksi
-      final detectionResult = EdgeDetectionService.findDocumentCorners(
-        rotatedMat,
+      detectionResult = EdgeDetectionService.findDocumentCorners(
+        mat,
+        rotateCode: rotateCode,
       );
+
       final cornersList = detectionResult['corners'] as List;
       final isPerfect = detectionResult['isPerfect'] as bool? ?? false;
       final corners = cornersList
-          .map(
-            (m) => m is Map
-                ? cv.Point((m['x'] as num).toInt(), (m['y'] as num).toInt())
-                : cv.Point(0, 0),
-          )
+          .map((m) => m is Map
+              ? cv.Point((m['x'] as num).toInt(), (m['y'] as num).toInt())
+              : cv.Point(0, 0))
           .toList();
 
       final hasDocument = isPerfect;
-      final rotatedWidth = rotatedMat.cols;
-      final rotatedHeight = rotatedMat.rows;
+      // Dimensions of the frame after rotation — used to normalise corners.
+      final processedWidth  = detectionResult['processedWidth']  as int? ?? mat.cols;
+      final processedHeight = detectionResult['processedHeight'] as int? ?? mat.rows;
 
       final confidence = hasDocument
-          ? _polygonArea(corners) / math.max(1, rotatedWidth * rotatedHeight)
+          ? _polygonArea(corners) / math.max(1, processedWidth * processedHeight)
           : 0.0;
 
       Uint8List? previewBytes;
       if (hasDocument) {
-        // Abaikan error di tahap Transform & Enhancement jika file service-nya belum sempurna
         try {
-          warped = PerspectiveTransformService.applyPerspectiveTransform(
-            rotatedMat,
-            corners,
-          );
-          enhanced = EnhancementService.enhanceDocument(warped);
-          previewBytes = ImageUtils.convertMatToUint8List(enhanced);
+          // EdgeDetectionService returns the full-resolution rotated Mat so
+          // that PerspectiveTransformService can sample at native quality.
+          final rotatedForTransform = detectionResult['rotatedMat'] as cv.Mat?;
+          if (rotatedForTransform != null) {
+            warped   = PerspectiveTransformService.applyPerspectiveTransform(rotatedForTransform, corners);
+            enhanced = EnhancementService.enhanceDocument(warped);
+            previewBytes = ImageUtils.convertMatToUint8List(enhanced);
+          }
         } catch (_) {
-          // Biarkan previewBytes null jika fungsi di atas belum siap
+          // Preview is optional; continue without it if the transform fails.
         }
       }
 
-      // Kembalikan koordinat dalam bentuk skala rasio (0.0 - 1.0) untuk dirender UI
+      // Return corners normalised to the [0.0, 1.0] ratio space for the UI.
       return <String, dynamic>{
         'corners': cornersList
-            .map(
-              (m) => m is Map
-                  ? <double>[
-                      (m['x'] as num).toDouble() / rotatedWidth,
-                      (m['y'] as num).toDouble() / rotatedHeight,
-                    ]
-                  : <double>[0.0, 0.0],
-            )
+            .map((m) => m is Map
+                ? <double>[
+                    (m['x'] as num).toDouble() / processedWidth,
+                    (m['y'] as num).toDouble() / processedHeight,
+                  ]
+                : <double>[0.0, 0.0])
             .toList(),
-        'imageWidth': rotatedWidth,
-        'imageHeight': rotatedHeight,
-        'status': hasDocument ? 'ready' : 'searching',
+        'imageWidth':  processedWidth,
+        'imageHeight': processedHeight,
+        'status':     hasDocument ? 'ready' : 'searching',
         'confidence': confidence.clamp(0.0, 1.0),
-        'preview': previewBytes,
+        'preview':    previewBytes,
       };
     } catch (error) {
       return <String, dynamic>{
-        'corners': <List<double>>[],
-        'status': 'error',
+        'corners':    <List<double>>[],
+        'status':     'error',
         'confidence': 0.0,
-        'error': error.toString(),
+        'error':      error.toString(),
       };
     } finally {
       enhanced?.dispose();
       warped?.dispose();
-      rotatedMat?.dispose();
+      // Dispose the full-res rotated Mat whose ownership was transferred from
+      // EdgeDetectionService.
+      (detectionResult?['rotatedMat'] as cv.Mat?)?.dispose();
       mat?.dispose();
     }
   }
 
+  /// Computes the area of an arbitrary polygon via the shoelace formula.
   static double _polygonArea(List<cv.Point> points) {
     if (points.length < 3) return 0;
     double area = 0;
@@ -190,6 +202,7 @@ class IsolateManager {
     return area.abs() / 2;
   }
 
+  /// Strips the row-stride padding that Android adds to YUV plane buffers.
   static Uint8List _packYPlaneBytes(
     Uint8List bytes,
     int width,
@@ -198,13 +211,12 @@ class IsolateManager {
   ) {
     final packed = Uint8List(width * height);
     for (var row = 0; row < height; row++) {
-      final srcOffset = row * bytesPerRow;
-      final dstOffset = row * width;
-      packed.setRange(dstOffset, dstOffset + width, bytes, srcOffset);
+      packed.setRange(row * width, row * width + width, bytes, row * bytesPerRow);
     }
     return packed;
   }
 
+  /// Terminates the background isolate and releases all ports.
   void dispose() {
     _isDisposed = true;
     _backgroundSendPort?.send(<String, dynamic>{'type': 'dispose'});
