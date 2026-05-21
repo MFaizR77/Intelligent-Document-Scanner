@@ -12,6 +12,8 @@ class ScannerControls extends StatelessWidget {
     required this.onFlash,
     required this.onCapture,
     required this.onPlan,
+    required this.onGallery,
+    this.captureProgress = 0,
   });
 
   final bool isReady;
@@ -21,6 +23,10 @@ class ScannerControls extends StatelessWidget {
   final VoidCallback onFlash;
   final VoidCallback onCapture;
   final VoidCallback onPlan;
+  final VoidCallback onGallery;
+
+  /// 0..1 — kalau auto-capture sedang counting, ini ring progress di shutter.
+  final double captureProgress;
 
   @override
   Widget build(BuildContext context) {
@@ -60,26 +66,49 @@ class ScannerControls extends StatelessWidget {
               ),
               GestureDetector(
                 onTap: onCapture,
-                child: Container(
+                child: SizedBox(
                   width: 86,
                   height: 86,
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    border: Border.all(
-                      color: isReady ? AppColors.primary : AppColors.border,
-                      width: 3,
-                    ),
-                  ),
-                  child: Container(
-                    decoration: BoxDecoration(
-                      color: isReady ? Colors.white : AppColors.elevated,
-                      shape: BoxShape.circle,
-                    ),
+                  child: Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // Ring progress (auto-capture countdown)
+                      if (captureProgress > 0)
+                        CircularProgressIndicator(
+                          value: captureProgress,
+                          strokeWidth: 4,
+                          color: AppColors.primary,
+                          backgroundColor:
+                              AppColors.primary.withValues(alpha: 0.2),
+                        ),
+                      Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: isReady
+                                  ? AppColors.primary
+                                  : AppColors.border,
+                              width: 3,
+                            ),
+                          ),
+                          child: Container(
+                            margin: const EdgeInsets.all(4),
+                            decoration: BoxDecoration(
+                              color: isReady
+                                  ? Colors.white
+                                  : AppColors.elevated,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
               ),
-              AppIconButton(icon: Icons.history, onPressed: onPlan),
+              AppIconButton(icon: Icons.photo_library, onPressed: onGallery),
             ],
           ),
         ],

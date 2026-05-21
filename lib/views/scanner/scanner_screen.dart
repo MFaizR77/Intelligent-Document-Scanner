@@ -5,10 +5,14 @@ import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
+import 'package:tugasbesar_pcd/controllers/auto_capture_controller.dart';
 import 'package:tugasbesar_pcd/controllers/scanner_controller.dart';
+import 'package:tugasbesar_pcd/models/capture_payload.dart';
 
 import 'package:tugasbesar_pcd/views/processing/processing_screen.dart';
 import 'package:tugasbesar_pcd/views/scanner/camera_plan_screen.dart';
+import 'package:tugasbesar_pcd/views/scanner/crop_screen.dart';
+import 'package:tugasbesar_pcd/views/scanner/picker_entry.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 import 'package:tugasbesar_pcd/widgets/scanner/document_edge_overlay.dart';
 import 'package:tugasbesar_pcd/widgets/scanner/scanner_controls.dart';
@@ -23,15 +27,21 @@ class ScannerScreen extends StatefulWidget {
 
 class _ScannerScreenState extends State<ScannerScreen> {
   late final ScannerController _controller;
+  late final AutoCaptureController _autoCapture;
 
   @override
   void initState() {
     super.initState();
     _controller = ScannerController();
+    _autoCapture = AutoCaptureController(
+      scanner: _controller,
+      onTrigger: _runCaptureFlow,
+    );
   }
 
   @override
   void dispose() {
+    _autoCapture.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -63,26 +73,63 @@ class _ScannerScreenState extends State<ScannerScreen> {
     );
   }
 
-  void _captureOrOpenPlan() {
+  void _captureOrOpenPlan() async {
     if (!_controller.isCameraReady) {
       _controller.initializeCameraFlow();
       return;
     }
 
     if (_controller.isDocumentReady) {
-      Navigator.of(
-        context,
-      ).push(MaterialPageRoute<void>(builder: (_) => const ProcessingScreen()));
+      await _runCaptureFlow();
       return;
     }
 
     _openCameraPlan();
   }
 
+  Future<void> _openGallery() async {
+    await PickerEntry.pickFromGallery(
+      context,
+      documentPlan: _controller.documentPlan,
+    );
+    if (!mounted) return;
+    await _controller.resumeDetectionStream();
+  }
+
+  Future<void> _runCaptureFlow() async {
+    final payload = await _controller.capturePhoto();
+    if (payload == null || !mounted) {
+      return;
+    }
+
+    // Layar crop dulu (manual corner adjustment), baru pipeline.
+    final adjusted = await Navigator.of(context).push<CapturePayload>(
+      MaterialPageRoute<CapturePayload>(
+        builder: (_) => CropScreen(payload: payload),
+      ),
+    );
+
+    if (!mounted) return;
+    if (adjusted == null) {
+      // User batal — restart stream realtime.
+      await _controller.resumeDetectionStream();
+      return;
+    }
+
+    await Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => ProcessingScreen(payload: adjusted),
+      ),
+    );
+
+    if (!mounted) return;
+    await _controller.resumeDetectionStream();
+  }
+
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: _controller,
+      animation: Listenable.merge([_controller, _autoCapture]),
       builder: (context, _) {
         return Scaffold(
           backgroundColor: AppColors.background,
@@ -108,9 +155,11 @@ class _ScannerScreenState extends State<ScannerScreen> {
                     autoCaptureEnabled: _controller.autoCaptureEnabled,
                     plan: _controller.documentPlan,
                     flashEnabled: _controller.flashEnabled,
+                    captureProgress: _autoCapture.progress,
                     onFlash: _controller.toggleFlash,
                     onCapture: _captureOrOpenPlan,
                     onPlan: _openCameraPlan,
+                    onGallery: _openGallery,
                   ),
                 ),
                 if (_controller.isLoadingCamera)
