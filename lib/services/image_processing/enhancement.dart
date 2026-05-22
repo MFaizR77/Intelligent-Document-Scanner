@@ -71,9 +71,12 @@ class EnhancementService {
 
     cv.Mat? gray;
     cv.Mat? shadowless;
+    cv.CLAHE? clahe;
+    cv.Mat? equalized;
     cv.Mat? binary;
     cv.Mat? closeKernel;
     cv.Mat? closed;
+    cv.Mat? blended;
 
     try {
       gray = src.channels == 3
@@ -86,11 +89,19 @@ class EnhancementService {
         kernelSize: profile.shadowKernelSize,
       );
 
-      // Tahap 2: adaptive threshold Gaussian → binarisasi tahan shadow lokal.
+      // Tahap 2: CLAHE moderat pada hasil shadow-removal supaya midtone
+      // tidak hilang total saat di-blend dengan binary di tahap 4.
+      clahe = cv.createCLAHE(
+        clipLimit: profile.claheClipLimit.clamp(1.5, 2.0),
+        tileGridSize: (profile.claheTileGrid, profile.claheTileGrid),
+      );
+      equalized = clahe.apply(shadowless);
+
+      // Tahap 3: adaptive threshold Gaussian → binarisasi tahan shadow lokal.
       // THRESH_BINARY supaya teks gelap → 0, latar terang → 255 (putih).
       final block = profile.adaptiveBlockSize | 1; // odd
       binary = cv.adaptiveThreshold(
-        shadowless,
+        equalized,
         255,
         cv.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv.THRESH_BINARY,
@@ -98,19 +109,29 @@ class EnhancementService {
         profile.adaptiveC,
       );
 
-      // Tahap 3: morphological closing kecil untuk menyambungkan stroke huruf
+      // Tahap 4: morphological closing kecil untuk menyambungkan stroke huruf
       // yang patah & "menebalkan" teks tipis.
       final kSize = profile.morphCloseKernel.clamp(1, 5);
       closeKernel = cv.getStructuringElement(cv.MORPH_RECT, (kSize, kSize));
       closed = cv.morphologyEx(binary, cv.MORPH_CLOSE, closeKernel);
 
-      return closed.clone(); // kasih hasil "milik kita" yang aman di-dispose
+      // Tahap 5: blend binary (threshold keras) dengan grayscale yang sudah
+      // di-CLAHE. Resep ini ala "Document" mode CamScanner — hitam-putih
+      // yang tidak ekstrem: stroke teks tetap padat tapi midtone (pensil
+      // tipis, gradasi kertas) tidak ikut hilang.
+      //   final = 0.55 * binary + 0.45 * equalized
+      blended = cv.addWeighted(closed, 0.55, equalized, 0.45, 0);
+
+      return blended.clone();
     } finally {
       gray?.dispose();
       shadowless?.dispose();
+      clahe?.dispose();
+      equalized?.dispose();
       binary?.dispose();
       closeKernel?.dispose();
       closed?.dispose();
+      blended?.dispose();
     }
   }
 
@@ -188,10 +209,9 @@ class EnhancementService {
       labChannels = cv.split(lab);
 
       clahe = cv.createCLAHE(
-        // Clip limit moderat — cukup untuk angkat kontras lokal pada catatan
-        // tanpa over-sharpen artefak. Range 1.8–2.2 adalah sweet spot
-        // untuk dokumen kertas dengan pencahayaan campuran.
-        clipLimit: profile.claheClipLimit.clamp(1.8, 2.2),
+        // Clip limit naik sedikit dari sweet spot (1.8–2.2) supaya kontras
+        // lokal lebih terangkat — gradasi pensil & tinta lebih kelihatan.
+        clipLimit: profile.claheClipLimit.clamp(2.2, 2.6),
         tileGridSize: (profile.claheTileGrid, profile.claheTileGrid),
       );
       lEnhanced = clahe.apply(labChannels[0]);
@@ -205,12 +225,13 @@ class EnhancementService {
       bgr = cv.cvtColor(labMerged, cv.COLOR_Lab2BGR);
 
       // Bilateral filter: kurangi noise tanpa kabur tepi.
-      smoothed = cv.bilateralFilter(bgr, 7, 50, 50);
+      smoothed = cv.bilateralFilter(bgr, 7, 55, 55);
 
-      // Unsharp mask: sharpened = 1.4*src - 0.4*blur
-      // Cukup berasa "lifted" tanpa sampai bikin halo / over-sharpen.
+      // Unsharp mask: sharpened = 1.5*src - 0.5*blur (sigma 1.0).
+      // Lebih berasa dari 1.4/-0.4 sebelumnya, tapi belum sampai bikin halo
+      // ekstrem seperti percobaan pertama yang 1.5/-0.5 dengan kernel besar.
       blurred = cv.gaussianBlur(smoothed, (5, 5), 1.0);
-      sharpened = cv.addWeighted(smoothed, 1.4, blurred, -0.4, 0);
+      sharpened = cv.addWeighted(smoothed, 1.5, blurred, -0.5, 0);
 
       return sharpened.clone();
     } finally {

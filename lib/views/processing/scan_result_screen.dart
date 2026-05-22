@@ -10,9 +10,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
+import 'package:tugasbesar_pcd/config/pcd_params.dart';
 import 'package:tugasbesar_pcd/models/scan_artifact.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
+import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
+import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
 import 'package:tugasbesar_pcd/services/ocr/text_recognition_service.dart';
+import 'package:tugasbesar_pcd/services/storage/file_service.dart';
 import 'package:tugasbesar_pcd/services/storage/pdf_export_service.dart';
 import 'package:tugasbesar_pcd/services/storage/scan_repository.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
@@ -28,16 +32,73 @@ class ScanResultScreen extends StatefulWidget {
 }
 
 class _ScanResultScreenState extends State<ScanResultScreen> {
+  late ScanArtifact _artifact;
+  late EnhancementMode _mode;
   ScanResult? _saved;
   bool _saving = false;
   bool _ocrLoading = false;
+  bool _switchingMode = false;
   String? _exportedPdfPath;
+
+  @override
+  void initState() {
+    super.initState();
+    _artifact = widget.artifact;
+    _mode = _modeFromLabel(widget.artifact.enhancementMode);
+  }
+
+  EnhancementMode _modeFromLabel(String label) {
+    for (final m in EnhancementMode.values) {
+      if (m.label == label) return m;
+    }
+    return EnhancementMode.color;
+  }
+
+  /// Re-run enhancement saja (deteksi & warp memakai 4 sudut yang sudah
+  /// tersimpan di artifact saat ini), lalu update path enhanced.
+  Future<void> _switchMode(EnhancementMode mode) async {
+    if (_switchingMode || mode == _mode) return;
+    setState(() => _switchingMode = true);
+
+    final oldEnhancedPath = _artifact.enhancedPath;
+    try {
+      final newPath = await FileService.newEnhancedJpegPath();
+      final profile =
+          PcdParams.profileForLabel(_artifact.documentPlanLabel);
+      final updated = await DocumentPipeline.runFromFile(
+        inputPath: _artifact.originalPath,
+        outputPath: newPath,
+        profile: profile,
+        mode: mode,
+        overrideCorners: _artifact.cornersImage,
+      );
+      if (!mounted) return;
+      setState(() {
+        _artifact = updated;
+        _mode = mode;
+        // Reset state save: hasil baru belum tersimpan ke Hive.
+        _saved = null;
+      });
+      // Best-effort hapus file mode lama supaya tidak menumpuk.
+      try {
+        final oldFile = File(oldEnhancedPath);
+        if (await oldFile.exists()) await oldFile.delete();
+      } catch (_) {}
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal ganti mode: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _switchingMode = false);
+    }
+  }
 
   Future<void> _save() async {
     if (_saved != null || _saving) return;
     setState(() => _saving = true);
     try {
-      final entry = await ScanRepository.instance.save(widget.artifact);
+      final entry = await ScanRepository.instance.save(_artifact);
       if (!mounted) return;
       setState(() => _saved = entry);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -51,15 +112,15 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   Future<void> _exportPdf() async {
     try {
       final path = await PdfExportService.instance.exportImages(
-        [widget.artifact.enhancedPath],
-        hint: widget.artifact.documentPlanLabel,
+        [_artifact.enhancedPath],
+        hint: _artifact.documentPlanLabel,
       );
       if (!mounted) return;
       setState(() => _exportedPdfPath = path);
 
       await Share.shareXFiles(
         [XFile(path)],
-        text: 'Hasil scan ${widget.artifact.documentPlanLabel}',
+        text: 'Hasil scan ${_artifact.documentPlanLabel}',
       );
     } catch (e) {
       if (!mounted) return;
@@ -72,8 +133,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   Future<void> _shareImage() async {
     try {
       await Share.shareXFiles(
-        [XFile(widget.artifact.enhancedPath)],
-        text: 'Scan ${widget.artifact.documentPlanLabel}',
+        [XFile(_artifact.enhancedPath)],
+        text: 'Scan ${_artifact.documentPlanLabel}',
       );
     } catch (e) {
       if (!mounted) return;
@@ -88,7 +149,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     setState(() => _ocrLoading = true);
     final svc = TextRecognitionService();
     try {
-      final result = await svc.recognize(File(widget.artifact.enhancedPath));
+      final result = await svc.recognize(File(_artifact.enhancedPath));
       if (!mounted) return;
       _showOcrSheet(result);
     } catch (e) {
@@ -216,7 +277,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final a = widget.artifact;
+    final a = _artifact;
     return Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
@@ -243,9 +304,28 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                   aspectRatio: 3 / 4,
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(12),
-                    child: BeforeAfterSlider(
-                      beforePath: a.originalPath,
-                      afterPath: a.enhancedPath,
+                    child: Stack(
+                      fit: StackFit.expand,
+                      children: [
+                        BeforeAfterSlider(
+                          // Key dengan path memastikan widget rebuild penuh
+                          // saat enhancedPath berganti (mode di-switch).
+                          key: ValueKey(a.enhancedPath),
+                          beforePath: a.originalPath,
+                          afterPath: a.enhancedPath,
+                        ),
+                        if (_switchingMode)
+                          const Positioned.fill(
+                            child: ColoredBox(
+                              color: Colors.black54,
+                              child: Center(
+                                child: CircularProgressIndicator(
+                                  color: AppColors.primary,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
                     ),
                   ),
                 ),
@@ -270,6 +350,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                 ),
               ],
             ),
+          ),
+          const SizedBox(height: 16),
+
+          // Mode selector (4 mode dari EnhancementService).
+          _ModeSelector(
+            current: _mode,
+            disabled: _switchingMode,
+            onSelect: _switchMode,
           ),
           const SizedBox(height: 16),
 
@@ -357,6 +445,147 @@ class _Metric extends StatelessWidget {
             style: TextStyle(color: color, fontWeight: FontWeight.w900),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _ModeSelector extends StatelessWidget {
+  const _ModeSelector({
+    required this.current,
+    required this.onSelect,
+    required this.disabled,
+  });
+
+  final EnhancementMode current;
+  final ValueChanged<EnhancementMode> onSelect;
+  final bool disabled;
+
+  // 4 mode dari EnhancementService — urutan match dengan order yang familiar
+  // di app sejenis (Color → BW → Grayscale → Magic).
+  static const _items = <(EnhancementMode, String, IconData)>[
+    (EnhancementMode.color, 'Color', Icons.palette_outlined),
+    (EnhancementMode.bw, 'B&W', Icons.contrast),
+    (EnhancementMode.grayscale, 'Grayscale', Icons.filter_b_and_w),
+    (EnhancementMode.magic, 'Magic', Icons.auto_awesome),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 10),
+            child: Row(
+              children: [
+                Text(
+                  'Mode Enhancement',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const Spacer(),
+                Icon(
+                  Icons.swipe,
+                  size: 14,
+                  color: Colors.white.withValues(alpha: 0.35),
+                ),
+              ],
+            ),
+          ),
+          // Horizontal scroll: hindari layout sempit kalau nanti ada mode
+          // tambahan, dan kasih tap target yang lebih lega per chip.
+          SizedBox(
+            height: 78,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              physics: const BouncingScrollPhysics(),
+              itemCount: _items.length,
+              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              itemBuilder: (_, i) {
+                final item = _items[i];
+                return _ModeChip(
+                  label: item.$2,
+                  icon: item.$3,
+                  active: current == item.$1,
+                  disabled: disabled,
+                  onTap: () => onSelect(item.$1),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeChip extends StatelessWidget {
+  const _ModeChip({
+    required this.label,
+    required this.icon,
+    required this.active,
+    required this.disabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool active;
+  final bool disabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tint = active ? AppColors.primary : Colors.white60;
+    return InkWell(
+      onTap: disabled ? null : onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Opacity(
+        opacity: disabled && !active ? 0.5 : 1.0,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 86,
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          decoration: BoxDecoration(
+            color: active
+                ? AppColors.primary.withValues(alpha: 0.16)
+                : AppColors.elevated,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: active ? AppColors.primary : AppColors.border,
+              width: active ? 1.4 : 1,
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: tint, size: 22),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: tint,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

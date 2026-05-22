@@ -4,7 +4,7 @@ import 'dart:ui';
 /// Hasil sekali jalan pipeline PCD (deteksi → warp → enhance).
 /// Belum tersimpan ke Hive; itu tugas ScanRepository di M4.
 class ScanArtifact {
-  const ScanArtifact({
+  ScanArtifact({
     required this.originalPath,
     required this.enhancedPath,
     required this.cornersImage,
