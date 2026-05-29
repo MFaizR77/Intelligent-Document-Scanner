@@ -18,8 +18,9 @@ class PdfExportService {
   Future<String> exportImages(
     List<String> imagePaths, {
     String? hint,
+    String? exactName,
   }) async {
-    final outPath = await FileService.newPdfPath(hint: hint);
+    final outPath = await FileService.newPdfPath(hint: hint, exactName: exactName);
     final doc = pw.Document();
 
     for (final path in imagePaths) {

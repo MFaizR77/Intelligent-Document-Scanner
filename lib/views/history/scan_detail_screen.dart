@@ -110,15 +110,52 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
   }
 
   Future<void> _exportPdf() async {
+    final TextEditingController nameController = TextEditingController(
+      text: '${widget.result.documentType}_${DateTime.now().millisecondsSinceEpoch}',
+    );
+
+    final customName = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: const Text('Simpan PDF', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: nameController,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(
+            labelText: 'Nama File',
+            labelStyle: TextStyle(color: Colors.white70),
+            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white30)),
+            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, nameController.text),
+            child: const Text('Simpan', style: TextStyle(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+
+    if (customName == null || customName.trim().isEmpty) return;
+    final finalName = customName.trim();
+
     try {
       final path = await PdfExportService.instance.exportImages(
         [widget.result.imagePath],
         hint: widget.result.documentType,
+        exactName: finalName,
       );
       if (!mounted) return;
       await Share.shareXFiles(
         [XFile(path)],
-        text: widget.result.documentType,
+        text: finalName,
       );
     } catch (e) {
       if (!mounted) return;

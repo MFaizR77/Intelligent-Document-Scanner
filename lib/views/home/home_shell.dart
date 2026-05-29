@@ -21,11 +21,18 @@ class _HomeShellState extends State<HomeShell> {
       backgroundColor: AppColors.background,
       body: IndexedStack(
         index: _index,
-        children: const [
-          HomeScreen(),
-          ScannerScreen(),
-          HistoryScreen(),
-          ProfileScreen(),
+        children: [
+          HomeScreen(
+            onScanPressed: () {
+              setState(() => _index = 1);
+            },
+            onViewAllPressed: () {
+              setState(() => _index = 2);
+            },
+          ),
+          const ScannerScreen(),
+          const HistoryScreen(),
+          const ProfileScreen(),
         ],
       ),
       bottomNavigationBar: NavigationBar(

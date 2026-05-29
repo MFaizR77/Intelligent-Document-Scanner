@@ -38,8 +38,15 @@ class FileService {
   }
 
   /// Generate path baru untuk file PDF.
-  static Future<String> newPdfPath({String? hint}) async {
+  static Future<String> newPdfPath({String? hint, String? exactName}) async {
     final dir = await _ensureSubdir('pdf');
+    if (exactName != null && exactName.isNotEmpty) {
+      String cleanName = exactName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      if (!cleanName.toLowerCase().endsWith('.pdf')) {
+        cleanName += '.pdf';
+      }
+      return '${dir.path}/$cleanName';
+    }
     final base = hint?.replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_') ?? 'scan';
     final stamp = DateTime.now().millisecondsSinceEpoch;
     return '${dir.path}/${base}_$stamp.pdf';

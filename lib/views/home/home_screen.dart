@@ -1,30 +1,60 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
+import 'package:tugasbesar_pcd/models/scan_result.dart';
 
 class HomeScreen extends StatelessWidget {
-  const HomeScreen({super.key});
+  const HomeScreen({
+    super.key, 
+    required this.onScanPressed,
+    required this.onViewAllPressed,
+  });
+
+  final VoidCallback onScanPressed;
+  final VoidCallback onViewAllPressed;
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeader(),
-              const SizedBox(height: 32),
-              _buildMainActionCard(),
-              const SizedBox(height: 24),
-              _buildStatsRow(),
-              const SizedBox(height: 32),
-              _buildRecentHeader(),
-              const SizedBox(height: 16),
-              _buildRecentList(),
-            ],
-          ),
+        child: ValueListenableBuilder<Box<ScanResult>>(
+          valueListenable: Hive.box<ScanResult>('scan_results').listenable(),
+          builder: (context, box, _) {
+            final scans = box.values.toList();
+            scans.sort((a, b) => b.scanDate.compareTo(a.scanDate));
+
+            final totalScans = scans.length;
+            final now = DateTime.now();
+            final todayScans = scans.where((s) => 
+                s.scanDate.year == now.year && 
+                s.scanDate.month == now.month && 
+                s.scanDate.day == now.day).length;
+
+            final avgQuality = totalScans > 0 
+                ? (scans.map((s) => s.confidenceScore).reduce((a, b) => a + b) / totalScans * 100).round()
+                : 0;
+
+            final recentScans = scans.take(3).toList();
+
+            return SingleChildScrollView(
+              padding: const EdgeInsets.all(24.0),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _buildHeader(),
+                  const SizedBox(height: 32),
+                  _buildMainActionCard(),
+                  const SizedBox(height: 24),
+                  _buildStatsRow(totalScans, todayScans, avgQuality),
+                  const SizedBox(height: 32),
+                  _buildRecentHeader(),
+                  const SizedBox(height: 16),
+                  _buildRecentList(recentScans),
+                ],
+              ),
+            );
+          },
         ),
       ),
     );
@@ -69,103 +99,78 @@ class HomeScreen extends StatelessWidget {
             ),
           ],
         ),
-        Stack(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                border: Border.all(color: AppColors.border),
-                shape: BoxShape.circle,
-              ),
-              child: const Icon(
-                Icons.notifications_outlined,
-                color: Colors.white,
-                size: 24,
-              ),
-            ),
-            Positioned(
-              right: 12,
-              top: 12,
-              child: Container(
-                width: 8,
-                height: 8,
-                decoration: const BoxDecoration(
-                  color: AppColors.danger,
-                  shape: BoxShape.circle,
-                ),
-              ),
-            ),
-          ],
-        ),
       ],
     );
   }
 
   Widget _buildMainActionCard() {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.primary,
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.15),
-              borderRadius: BorderRadius.circular(16),
+    return GestureDetector(
+      onTap: onScanPressed,
+      child: Container(
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppColors.primary,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.black.withOpacity(0.15),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.camera_alt_outlined,
+                color: AppColors.background,
+                size: 32,
+              ),
             ),
-            child: const Icon(
-              Icons.camera_alt_outlined,
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Scan Dokumen\nBaru',
+                    style: TextStyle(
+                      color: AppColors.background,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 18,
+                      height: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'Auto-detect ·\nPerspective fix',
+                    style: TextStyle(
+                      color: AppColors.background.withOpacity(0.7),
+                      fontSize: 13,
+                      height: 1.2,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
               color: AppColors.background,
-              size: 32,
+              size: 28,
             ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Scan Dokumen\nBaru',
-                  style: TextStyle(
-                    color: AppColors.background,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 18,
-                    height: 1.2,
-                  ),
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'Auto-detect ·\nPerspective fix',
-                  style: TextStyle(
-                    color: AppColors.background.withOpacity(0.7),
-                    fontSize: 13,
-                    height: 1.2,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const Icon(
-            Icons.chevron_right,
-            color: AppColors.background,
-            size: 28,
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
 
-  Widget _buildStatsRow() {
+  Widget _buildStatsRow(int totalScans, int todayScans, int avgQuality) {
     return Row(
       children: [
-        Expanded(child: _buildStatCard('24', 'total\nscan', isGreen: true)),
+        Expanded(child: _buildStatCard(totalScans.toString(), 'total\nscan', isGreen: true)),
         const SizedBox(width: 12),
-        Expanded(child: _buildStatCard('3', 'hari ini', isGreen: false)),
+        Expanded(child: _buildStatCard(todayScans.toString(), 'hari ini', isGreen: false)),
         const SizedBox(width: 12),
-        Expanded(child: _buildStatCard('96%', 'avg\nquality', isGreen: false)),
+        Expanded(child: _buildStatCard('$avgQuality%', 'avg\nquality', isGreen: false)),
       ],
     );
   }
@@ -218,7 +223,7 @@ class HomeScreen extends StatelessWidget {
           ),
         ),
         TextButton(
-          onPressed: () {},
+          onPressed: onViewAllPressed,
           style: TextButton.styleFrom(
             padding: EdgeInsets.zero,
             minimumSize: Size.zero,
@@ -236,24 +241,48 @@ class HomeScreen extends StatelessWidget {
     );
   }
 
-  Widget _buildRecentList() {
+  Widget _buildRecentList(List<ScanResult> recentScans) {
+    if (recentScans.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 32),
+          child: Text(
+            'Belum ada dokumen yang di-scan.',
+            style: TextStyle(color: Colors.white.withOpacity(0.5)),
+          ),
+        ),
+      );
+    }
+    
     return Column(
-      children: [
-        _buildRecentItem(
-          'Laporan Praktikum P...',
-          'Hari ini · 09:41',
-          '97%',
-          AppColors.primary,
-        ),
-        const SizedBox(height: 12),
-        _buildRecentItem(
-          'Struk Pembelian',
-          'Kemarin · 14:22',
-          '82%',
-          AppColors.warning,
-          isStruk: true,
-        ),
-      ],
+      children: recentScans.map((scan) {
+        final now = DateTime.now();
+        final isToday = scan.scanDate.year == now.year && 
+                        scan.scanDate.month == now.month && 
+                        scan.scanDate.day == now.day;
+        final timeStr = '${scan.scanDate.hour.toString().padLeft(2, '0')}:${scan.scanDate.minute.toString().padLeft(2, '0')}';
+        final subtitle = isToday ? 'Hari ini · $timeStr' : '${scan.scanDate.day}/${scan.scanDate.month}/${scan.scanDate.year} · $timeStr';
+        
+        final qualityPercent = (scan.confidenceScore * 100).round();
+        final qualityColor = qualityPercent >= 90 ? AppColors.primary 
+            : (qualityPercent >= 70 ? AppColors.warning : AppColors.danger);
+            
+        final isStruk = scan.documentType.toLowerCase().contains('struk');
+        
+        // Coba ekstrak nama dari path atau gunakan tipe dokumen
+        final title = scan.documentType.isNotEmpty ? 'Scan ${scan.documentType}' : 'Dokumen Scan';
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: _buildRecentItem(
+            title,
+            subtitle,
+            '$qualityPercent%',
+            qualityColor,
+            isStruk: isStruk,
+          ),
+        );
+      }).toList(),
     );
   }
 
