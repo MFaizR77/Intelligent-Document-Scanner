@@ -125,7 +125,7 @@ class HomeScreen extends StatelessWidget {
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.black.withOpacity(0.15),
+                color: Colors.black.withValues(alpha: 0.15),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: const Icon(
@@ -152,7 +152,7 @@ class HomeScreen extends StatelessWidget {
                   Text(
                     'Auto-detect ·\nPerspective fix',
                     style: TextStyle(
-                      color: AppColors.background.withOpacity(0.7),
+                      color: AppColors.background.withValues(alpha: 0.7),
                       fontSize: 13,
                       height: 1.2,
                     ),
@@ -189,7 +189,7 @@ class HomeScreen extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(color: AppColors.border),
         borderRadius: BorderRadius.circular(16),
-        color: AppColors.surface.withOpacity(0.5),
+        color: AppColors.surface.withValues(alpha: 0.5),
       ),
       child: Column(
         children: [
@@ -256,7 +256,7 @@ class HomeScreen extends StatelessWidget {
           padding: const EdgeInsets.symmetric(vertical: 32),
           child: Text(
             'Belum ada dokumen yang di-scan.',
-            style: TextStyle(color: Colors.white.withOpacity(0.5)),
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
           ),
         ),
       );
@@ -300,7 +300,7 @@ class HomeScreen extends StatelessWidget {
       decoration: BoxDecoration(
         border: Border.all(color: AppColors.border),
         borderRadius: BorderRadius.circular(16),
-        color: AppColors.surface.withOpacity(0.5),
+        color: AppColors.surface.withValues(alpha: 0.5),
       ),
       child: Row(
         children: [
@@ -359,7 +359,7 @@ class HomeScreen extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-              border: Border.all(color: qualityColor.withOpacity(0.5)),
+              border: Border.all(color: qualityColor.withValues(alpha: 0.5)),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(

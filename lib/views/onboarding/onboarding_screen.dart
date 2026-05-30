@@ -158,7 +158,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                 width: pageIndex == index ? 24 : 8,
                 height: 4,
                 decoration: BoxDecoration(
-                  color: pageIndex == index ? activeColor : Colors.white.withOpacity(0.2),
+                  color: pageIndex == index ? activeColor : Colors.white.withValues(alpha: 0.2),
                   borderRadius: BorderRadius.circular(2),
                 ),
               );
@@ -171,7 +171,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
             subtitle,
             style: TextStyle(
               fontSize: 16,
-              color: Colors.white.withOpacity(0.6),
+              color: Colors.white.withValues(alpha: 0.6),
               height: 1.5,
             ),
           ),
@@ -344,7 +344,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   '$size  ·  $confidence',
                   style: TextStyle(
                     fontSize: 14,
-                    color: Colors.white.withOpacity(0.5),
+                    color: Colors.white.withValues(alpha: 0.5),
                   ),
                 ),
               ],
@@ -353,7 +353,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
-              color: tagColor.withOpacity(0.2),
+              color: tagColor.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(4),
             ),
             child: Text(
@@ -411,7 +411,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                     child: Text(
                       _currentPage == 0 ? 'Lewati' : '← Kembali',
                       style: TextStyle(
-                        color: Colors.white.withOpacity(0.6),
+                        color: Colors.white.withValues(alpha: 0.6),
                         fontSize: 16,
                       ),
                     ),

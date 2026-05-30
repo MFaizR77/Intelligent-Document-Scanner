@@ -44,7 +44,7 @@ class _SplashScreenState extends State<SplashScreen> {
                 borderRadius: BorderRadius.circular(24),
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(0xFF34C759).withOpacity(0.3),
+                    color: const Color(0xFF34C759).withValues(alpha: 0.3),
                     blurRadius: 40,
                     spreadRadius: 10,
                   ),
@@ -93,7 +93,7 @@ class _SplashScreenState extends State<SplashScreen> {
       width: 8,
       height: 8,
       decoration: BoxDecoration(
-        color: const Color(0xFF34C759).withOpacity(index == 0 ? 1.0 : 0.4),
+        color: const Color(0xFF34C759).withValues(alpha: index == 0 ? 1.0 : 0.4),
         shape: BoxShape.circle,
       ),
     );
