@@ -12,6 +12,7 @@ import 'package:share_plus/share_plus.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/config/pcd_params.dart';
 import 'package:tugasbesar_pcd/models/scan_artifact.dart';
+import 'package:tugasbesar_pcd/models/scan_engine.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
 import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
@@ -71,6 +72,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
         profile: profile,
         mode: mode,
         overrideCorners: _artifact.cornersImage,
+        skipGeometry: _artifact.engine.skipGeometry,
+        engine: _artifact.engine,
       );
       if (!mounted) return;
       setState(() {
@@ -369,6 +372,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                 const SizedBox(height: 12),
                 Row(
                   children: [
+                    _Metric(label: 'Engine', value: a.engine.label),
                     _Metric(label: 'Mode', value: a.enhancementMode),
                     _Metric(
                       label: 'Plan',

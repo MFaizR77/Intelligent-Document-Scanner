@@ -358,6 +358,40 @@ class ScannerController extends ChangeNotifier {
     isStreaming = false;
   }
 
+  /// Releases the camera and tears down the processing isolate **without**
+  /// disposing this controller. Safe to call when leaving the scanner tab or
+  /// when the app goes to background — a later [initializeCameraFlow] will
+  /// re-initialise everything from scratch.
+  ///
+  /// This is the core of the camera-leak fix: the sensor + background isolate
+  /// only stay alive while the scanner is actually on screen and active.
+  Future<void> releaseCamera() async {
+    if (_isDisposed) return;
+    if (!isCameraReady && !isStreaming && !isLoadingCamera) {
+      // Nothing to release.
+      return;
+    }
+    try {
+      await _cameraController.release();
+    } catch (_) {
+      // Best-effort; native controller may already be gone.
+    }
+    _isolateManager.shutdown();
+
+    isStreaming = false;
+    isCameraReady = false;
+    isLoadingCamera = false;
+    isProcessingFrame = false;
+    flashEnabled = false;
+    detectionState = 'idle';
+    confidence = 0;
+    documentCorners = const [];
+    _smoothedCorners = null;
+    enhancedPreview = null;
+    statusText = 'Tekan Mulai Scan untuk membuka kamera';
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     if (_cleanupScheduled) {

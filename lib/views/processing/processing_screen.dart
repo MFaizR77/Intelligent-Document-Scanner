@@ -8,6 +8,7 @@ import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/config/pcd_params.dart';
 import 'package:tugasbesar_pcd/models/capture_payload.dart';
 import 'package:tugasbesar_pcd/models/scan_artifact.dart';
+import 'package:tugasbesar_pcd/models/scan_engine.dart';
 import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
 import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
 import 'package:tugasbesar_pcd/services/storage/file_service.dart';
@@ -38,12 +39,15 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
   Future<ScanArtifact> _runPipeline() async {
     final outPath = await FileService.newEnhancedJpegPath();
     final profile = PcdParams.profileForLabel(widget.payload.documentPlan);
+    final engine = widget.payload.engine;
     return DocumentPipeline.runFromFile(
       inputPath: widget.payload.rawImagePath,
       outputPath: outPath,
       profile: profile,
       mode: _mode,
       overrideCorners: widget.payload.suggestedCornersImage,
+      skipGeometry: engine.skipGeometry,
+      engine: engine,
     );
   }
 

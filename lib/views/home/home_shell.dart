@@ -30,7 +30,7 @@ class _HomeShellState extends State<HomeShell> {
               setState(() => _index = 2);
             },
           ),
-          const ScannerScreen(),
+          ScannerScreen(isActive: _index == 1),
           const HistoryScreen(),
           const ProfileScreen(),
         ],

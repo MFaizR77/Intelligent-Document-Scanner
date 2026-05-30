@@ -69,7 +69,7 @@ class DocumentPreviewCard extends StatelessWidget {
                   border: Border.all(color: tagColor.withValues(alpha: 0.5)),
                 ),
                 child: Text(
-                  '$qualityLabel âœ“',
+                  '$qualityLabel“',
                   style: TextStyle(
                     color: tagColor,
                     fontSize: 12,

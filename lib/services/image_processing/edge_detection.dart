@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
@@ -5,6 +7,20 @@ import '../../config/pcd_params.dart';
 
 /// Detects the four corner landmarks of a document in a camera frame using
 /// a pure OpenCV pipeline (no external ML models).
+///
+/// Pipeline (realtime path):
+///   downscale → CLAHE → bilateralFilter → adaptiveCanny ∪ SobelOtsu
+///   → MORPH_CLOSE → top-N contour scoring → ordered TL-TR-BR-BL corners.
+///
+/// Reference notes:
+///   - Adaptive Canny via the sigma method (Adrian Rosebrock, PyImageSearch)
+///     replaces hard-coded thresholds that fail under uneven lighting.
+///   - Dual edge map (Canny ∪ Sobel-Otsu) recovers weak gradients on glossy
+///     ID cards / wood surfaces — a classic-CV equivalent of the multi-cue
+///     scoring described in Readdle ScannerPro's first iteration blog post.
+///   - Multiple candidates are scored (aspect, interior angles, area) instead
+///     of trusting only the single largest contour, which is the common
+///     failure mode pointed out in scanbot.io/techblog.
 class EdgeDetectionService {
   // Maximum width of the downscaled working frame. Downscaling destroys
   // high-frequency details (text, patterns) while preserving macro structure
@@ -23,10 +39,36 @@ class EdgeDetectionService {
   // findContours from penetrating the document interior (e.g. text blocks).
   static const (int, int) _closingKernelSize = (7, 7);
 
-  // Valid aspect-ratio range for real-world documents (A4=1.41, F4=1.37,
-  // ID card≈1.59, B5=1.41). Contours outside this range are rejected.
-  static const double _minAspectRatio = 1.2;
-  static const double _maxAspectRatio = 1.9;
+  // Adaptive Canny via sigma method. lower = max(0, (1-σ)·median),
+  // upper = min(255, (1+σ)·median). σ=0.33 is the de-facto standard from
+  // Rosebrock's analysis; mean is used as a cheaper proxy for median which
+  // OpenCV's high-level Dart binding does not expose directly.
+  static const double _cannySigma = 0.33;
+  static const double _cannyLowerFloor = 10;
+  static const double _cannyUpperCeil = 200;
+
+  // Valid aspect-ratio range for documents we care about:
+  //   A4 = 1.414, KTP/ID = 1.586, B5 = 1.41, Buku ~1.5, Receipt ≤ 2.0.
+  // Loosened slightly from the previous 1.2-1.9 to give KTP and slightly
+  // tilted A4 a safety margin.
+  static const double _minAspectRatio = 1.15;
+  static const double _maxAspectRatio = 2.10;
+
+  // Maximum average per-corner deviation from 90° (degrees). Documents
+  // photographed within ~30° of normal will fall well inside this budget;
+  // skewed quadrilaterals (e.g. partially occluded or non-document objects)
+  // exceed it and are rejected.
+  static const double _maxAvgAngleDeviation = 25.0;
+
+  // Number of top contours (by area) considered for scoring. ScannerPro v1
+  // scored "all possible quadrilaterals"; for a 500-px realtime frame, 5 is
+  // a safe ceiling that keeps the loop sub-millisecond.
+  static const int _topCandidates = 5;
+
+  // Adaptive epsilon factors for approxPolyDP. Trying multiple values is the
+  // classic-CV remedy for the well-known "approxPolyDP returns 5 points"
+  // failure when one corner is slightly noisy.
+  static const List<double> _approxFactors = [0.02, 0.025, 0.03, 0.035, 0.04];
 
   /// Finds the four corner points of the largest document-like contour in [input].
   ///
@@ -36,9 +78,8 @@ class EdgeDetectionService {
   ///
   /// Returns a map with:
   /// - `corners` — list of `{x, y}` maps in original-frame pixel coordinates.
-  /// - `isPerfect` — true only when a convex quadrilateral with a valid aspect
-  ///   ratio is found. Saat false tapi corners ada, UI bisa menggambar
-  ///   polygon merah sebagai feedback "masih cari".
+  /// - `isPerfect` — true only when a convex quadrilateral with valid aspect
+  ///   ratio AND interior angles near 90° is found.
   /// - `processedWidth` / `processedHeight` — frame dimensions after rotation,
   ///   used by the caller to normalise corners to the [0, 1] ratio space.
   /// - `rotatedMat` — full-resolution [cv.Mat] after rotation, required by
@@ -54,11 +95,20 @@ class EdgeDetectionService {
     cv.Mat? smallMat;
     cv.Mat? rotatedSmall;
     cv.Mat? gray;
+    cv.CLAHE? clahe;
+    cv.Mat? equalized;
     cv.Mat? blurred;
-    cv.Mat? edges;
+    cv.Mat? cannyEdges;
+    cv.Mat? sobelX;
+    cv.Mat? sobelY;
+    cv.Mat? absX;
+    cv.Mat? absY;
+    cv.Mat? sobelMag;
+    cv.Mat? sobelEdges;
+    cv.Mat? combinedEdges;
+    cv.Mat? closingKernel;
     cv.Mat? closed;
     cv.Contours? contours;
-    cv.Mat? closingKernel;
 
     try {
       // --- Downscale ---
@@ -67,7 +117,6 @@ class EdgeDetectionService {
           : 1.0;
       final int smallW = (input.cols * scale).round();
       final int smallH = (input.rows * scale).round();
-      // INTER_AREA provides natural anti-aliasing during downscaling.
       smallMat = cv.resize(input, (smallW, smallH), interpolation: cv.INTER_AREA);
 
       // --- Rotate after downscale (performance optimisation) ---
@@ -81,27 +130,60 @@ class EdgeDetectionService {
       final int processedW = processTarget.cols;
       final int processedH = processTarget.rows;
 
-      // --- Contrast stretching ---
-      // NORM_MINMAX forces the full 0-255 intensity range, making low-contrast
-      // documents (e.g. coloured ID cards on a similarly-toned surface) stand
-      // out clearly against the background before edge detection.
+      // --- Local-contrast normalisation via CLAHE ---
+      // CLAHE (Zuiderveld, 1994) replaces the previous global NORM_MINMAX
+      // stretch. Local histogram equalisation handles uneven lighting and
+      // shadows far better than a global minmax remap, which is the failure
+      // mode highlighted by both Scanbot and Readdle ScannerPro write-ups.
       gray = _toGrayscale(processTarget);
-      cv.normalize(gray, gray, alpha: 0, beta: 255, normType: cv.NORM_MINMAX);
+      clahe = cv.createCLAHE(clipLimit: 2.0, tileGridSize: (8, 8));
+      equalized = clahe.apply(gray);
 
       // --- Edge-preserving noise reduction ---
-      blurred = _applyBilateralFilter(gray);
+      blurred = cv.bilateralFilter(
+        equalized,
+        _bilateralD,
+        _bilateralSigmaColor,
+        _bilateralSigmaSpace,
+      );
 
-      // --- Canny edge detection ---
-      // Lower thresholds (30, 100) improve recall for faint edges at document
-      // corners, such as those on laminated or glossy ID cards.
-      edges = cv.canny(blurred, 30, 100);
+      // --- Adaptive Canny via sigma method ---
+      // PyImageSearch's auto_canny: derive thresholds from image statistics
+      // so the same code works on dark/bright/low-contrast frames without
+      // re-tuning. Mean is used as a cheap median proxy.
+      final meanScalar = cv.mean(blurred);
+      final med = meanScalar.val1;
+      final cannyLow = math
+          .max(_cannyLowerFloor, (1.0 - _cannySigma) * med)
+          .toDouble();
+      final cannyHigh = math
+          .min(_cannyUpperCeil, (1.0 + _cannySigma) * med)
+          .toDouble();
+      cannyEdges = cv.canny(blurred, cannyLow, cannyHigh);
 
-      // --- Morphological closing ---
-      // Bridges discontinuities in the outer document boundary produced by
-      // Canny, creating a sealed perimeter that blocks RETR_EXTERNAL from
-      // descending into the document interior.
+      // --- Secondary edge channel: Sobel magnitude + Otsu threshold ---
+      // Canny suppresses non-maximum gradients aggressively; weak edges on
+      // matt or laminated surfaces (KTP, glossy book covers) are sometimes
+      // missed entirely. Adding a Sobel-magnitude path with Otsu auto-thresh
+      // recovers them. The two maps are unioned via bitwise OR.
+      sobelX = cv.sobel(blurred, cv.MatType.CV_16S, 1, 0, ksize: 3);
+      sobelY = cv.sobel(blurred, cv.MatType.CV_16S, 0, 1, ksize: 3);
+      absX = cv.convertScaleAbs(sobelX);
+      absY = cv.convertScaleAbs(sobelY);
+      sobelMag = cv.addWeighted(absX, 0.5, absY, 0.5, 0);
+      final thrTuple = cv.threshold(
+        sobelMag,
+        0,
+        255,
+        cv.THRESH_BINARY | cv.THRESH_OTSU,
+      );
+      sobelEdges = thrTuple.$2;
+
+      combinedEdges = cv.bitwiseOR(cannyEdges, sobelEdges);
+
+      // --- Morphological closing on the combined map ---
       closingKernel = cv.getStructuringElement(cv.MORPH_RECT, _closingKernelSize);
-      closed = cv.morphologyEx(edges, cv.MORPH_CLOSE, closingKernel);
+      closed = cv.morphologyEx(combinedEdges, cv.MORPH_CLOSE, closingKernel);
 
       // --- Contour detection ---
       final contourResult = cv.findContours(
@@ -113,85 +195,57 @@ class EdgeDetectionService {
 
       if (contours.isEmpty) return {'corners': [], 'isPerfect': false};
 
-      // Reject contours smaller than 5 % of the working frame area.
-      final minArea = (processedW * processedH) * 0.05;
-      double largestArea = minArea;
-      cv.Contour? largestContour;
-
+      // --- Top-N candidates by area ---
+      // The "single largest contour" heuristic frequently picks shadow
+      // boundaries, table edges, or partial documents. Scoring the top-5
+      // and keeping the geometrically best one is robust against this.
+      final imgArea = (processedW * processedH).toDouble();
+      final minArea = imgArea * 0.05;
+      final ranked = <_RankedContour>[];
       for (final contour in contours) {
         final area = cv.contourArea(contour);
-        if (area > largestArea) {
-          largestArea = area;
-          largestContour = contour;
+        if (area > minArea) {
+          ranked.add(_RankedContour(contour: contour, area: area));
+        }
+      }
+      if (ranked.isEmpty) return {'corners': [], 'isPerfect': false};
+      ranked.sort((a, b) => b.area.compareTo(a.area));
+
+      _Candidate? best;
+      for (var i = 0; i < math.min(_topCandidates, ranked.length); i++) {
+        final entry = ranked[i];
+        final cand = _evaluateCandidate(
+          entry.contour,
+          entry.area,
+          processedW,
+          processedH,
+        );
+        if (cand == null) continue;
+        if (best == null || cand.score > best.score) {
+          best = cand;
         }
       }
 
-      if (largestContour == null) return {'corners': [], 'isPerfect': false};
-
-      final perimeter = cv.arcLength(largestContour, true);
-      final approx = cv.approxPolyDP(largestContour, 0.03 * perimeter, true);
-
-      List<cv.Point> points;
-      bool isPerfect = false;
-
-      if (approx.length == 4) {
-        points = approx.map((p) => cv.Point(p.x, p.y)).toList();
-        isPerfect = true;
-      } else {
-        // Fallback: derive a quadrilateral from the minimum-area bounding rect.
-        final rotatedRect = cv.minAreaRect(largestContour);
-        final box = cv.boxPoints(rotatedRect);
-        points = box.toList().map((p) => cv.Point(p.x.toInt(), p.y.toInt())).toList();
-      }
-
-      // --- Geometric validation (runs only when approxPolyDP found 4 pts) ---
-
-      // Aspect-ratio check: use minAreaRect so that tilted documents are
-      // measured along their actual orientation, not their axis-aligned bbox.
-      if (isPerfect) {
-        final rect = cv.minAreaRect(largestContour);
-        final w = rect.size.width;
-        final h = rect.size.height;
-        final ratio = w > h ? w / h : h / w; // always ≥ 1.0, orientation-agnostic
-        if (ratio < _minAspectRatio || ratio > _maxAspectRatio) {
-          isPerfect = false;
-        }
-      }
-
-      // Convexity check: a flat physical document always appears as a convex
-      // polygon from the camera's perspective; a concave hull indicates a
-      // non-document object.
-      if (isPerfect && approx.length == 4) {
-        if (!cv.isContourConvex(approx)) {
-          isPerfect = false;
-        }
-      }
-
-      approx.dispose();
+      if (best == null) return {'corners': [], 'isPerfect': false};
 
       // --- Scale coordinates back to original-frame resolution ---
-      // The scale factor is derived from the input width before rotation, so
-      // it remains valid regardless of the rotation angle.
-      final double inverseScale = 1.0 / scale;
-      final scaledPoints = points
+      final inverseScale = 1.0 / scale;
+      final scaledPoints = best.points
           .map((p) => cv.Point(
                 (p.x * inverseScale).round(),
                 (p.y * inverseScale).round(),
               ))
           .toList();
-
       final ordered = _orderCorners(scaledPoints);
 
-      // Original-frame dimensions after rotation, for UI normalisation.
-      final int originalProcessedW = (processedW / scale).round();
-      final int originalProcessedH = (processedH / scale).round();
+      final originalProcessedW = (processedW / scale).round();
+      final originalProcessedH = (processedH / scale).round();
 
       return {
         'corners': ordered.map((p) => {'x': p.x.toDouble(), 'y': p.y.toDouble()}).toList(),
-        'isPerfect': isPerfect,
+        'isPerfect': best.isPerfect,
         'processedWidth': originalProcessedW,
         'processedHeight': originalProcessedH,
-        // Full-resolution rotated Mat — ownership transferred to caller.
         'rotatedMat': rotateCode != null
             ? cv.rotate(input, rotateCode)
             : input.clone(),
@@ -203,10 +257,19 @@ class EdgeDetectionService {
       return {'corners': [], 'isPerfect': false};
     } finally {
       contours?.dispose();
-      closingKernel?.dispose();
       closed?.dispose();
-      edges?.dispose();
+      closingKernel?.dispose();
+      combinedEdges?.dispose();
+      sobelEdges?.dispose();
+      sobelMag?.dispose();
+      absY?.dispose();
+      absX?.dispose();
+      sobelY?.dispose();
+      sobelX?.dispose();
+      cannyEdges?.dispose();
       blurred?.dispose();
+      equalized?.dispose();
+      clahe?.dispose();
       gray?.dispose();
       rotatedSmall?.dispose();
       smallMat?.dispose();
@@ -215,13 +278,9 @@ class EdgeDetectionService {
   }
 
   /// Profile-aware corner detection used by the **capture (hi-res) path**
-  /// (e.g. [DocumentPipeline]). The realtime stream path uses the optimised
-  /// [findDocumentCorners] above; this variant honours per-document tuning
-  /// (Canny thresholds, Gaussian kernel, min-area ratio) coming from the
-  /// [PcdProfile] selected by the user on CameraPlanScreen.
-  ///
-  /// Returns ordered TL-TR-BR-BL points in the **input image** coordinate
-  /// space, or an empty list if no acceptable quadrilateral is found.
+  /// (e.g. [DocumentPipeline]). Same scoring strategy as the realtime path
+  /// but parameter values come from [PcdProfile] so per-document tuning is
+  /// honoured (e.g. KTP uses tighter Canny + smaller min-area).
   static List<cv.Point> findDocumentCornersWith(
     cv.Mat input,
     PcdProfile profile,
@@ -229,62 +288,227 @@ class EdgeDetectionService {
     if (input.isEmpty) return [];
 
     cv.Mat? gray;
+    cv.CLAHE? clahe;
+    cv.Mat? equalized;
     cv.Mat? blurred;
-    cv.Mat? edges;
+    cv.Mat? cannyEdges;
+    cv.Mat? sobelX;
+    cv.Mat? sobelY;
+    cv.Mat? absX;
+    cv.Mat? absY;
+    cv.Mat? sobelMag;
+    cv.Mat? sobelEdges;
+    cv.Mat? combinedEdges;
+    cv.Mat? closingKernel;
+    cv.Mat? closed;
     cv.Contours? contours;
-    cv.VecVec4i? hierarchy;
-    cv.VecPoint? bestApprox;
 
     try {
       gray = input.channels == 3
           ? cv.cvtColor(input, cv.COLOR_BGR2GRAY)
           : input.clone();
-      final ksize = profile.gaussianKernel | 1; // pastikan ganjil
-      blurred = cv.gaussianBlur(gray, (ksize, ksize), profile.gaussianSigma);
-      edges = cv.canny(
+
+      clahe = cv.createCLAHE(
+        clipLimit: profile.claheClipLimit,
+        tileGridSize: (profile.claheTileGrid, profile.claheTileGrid),
+      );
+      equalized = clahe.apply(gray);
+
+      final ksize = profile.gaussianKernel | 1;
+      blurred = cv.gaussianBlur(equalized, (ksize, ksize), profile.gaussianSigma);
+
+      // Profile thresholds preserved as the primary Canny pass.
+      cannyEdges = cv.canny(
         blurred,
         profile.cannyThreshold1,
         profile.cannyThreshold2,
       );
 
+      // Sobel-Otsu rescue channel — same justification as realtime path.
+      sobelX = cv.sobel(blurred, cv.MatType.CV_16S, 1, 0, ksize: 3);
+      sobelY = cv.sobel(blurred, cv.MatType.CV_16S, 0, 1, ksize: 3);
+      absX = cv.convertScaleAbs(sobelX);
+      absY = cv.convertScaleAbs(sobelY);
+      sobelMag = cv.addWeighted(absX, 0.5, absY, 0.5, 0);
+      final thrTuple = cv.threshold(
+        sobelMag,
+        0,
+        255,
+        cv.THRESH_BINARY | cv.THRESH_OTSU,
+      );
+      sobelEdges = thrTuple.$2;
+
+      combinedEdges = cv.bitwiseOR(cannyEdges, sobelEdges);
+
+      closingKernel = cv.getStructuringElement(cv.MORPH_RECT, _closingKernelSize);
+      closed = cv.morphologyEx(combinedEdges, cv.MORPH_CLOSE, closingKernel);
+
       final contourResult = cv.findContours(
-        edges,
+        closed,
         cv.RETR_EXTERNAL,
         cv.CHAIN_APPROX_SIMPLE,
       );
       contours = contourResult.$1;
-      hierarchy = contourResult.$2;
+      if (contours.isEmpty) return [];
 
       final imageArea = (input.cols * input.rows).toDouble();
-      var maxArea = profile.minContourAreaRatio * imageArea;
+      final minArea = profile.minContourAreaRatio * imageArea;
 
+      final ranked = <_RankedContour>[];
       for (final contour in contours) {
         final area = cv.contourArea(contour);
-        if (area <= maxArea) continue;
+        if (area > minArea) {
+          ranked.add(_RankedContour(contour: contour, area: area));
+        }
+      }
+      if (ranked.isEmpty) return [];
+      ranked.sort((a, b) => b.area.compareTo(a.area));
 
-        final epsilon = 0.02 * cv.arcLength(contour, true);
-        final approx = cv.approxPolyDP(contour, epsilon, true);
-        if (approx.length == 4) {
-          bestApprox?.dispose();
-          bestApprox = approx;
-          maxArea = area;
-        } else {
-          approx.dispose();
+      _Candidate? best;
+      for (var i = 0; i < math.min(_topCandidates, ranked.length); i++) {
+        final entry = ranked[i];
+        final cand = _evaluateCandidate(
+          entry.contour,
+          entry.area,
+          input.cols,
+          input.rows,
+        );
+        if (cand == null) continue;
+        if (best == null || cand.score > best.score) {
+          best = cand;
         }
       }
 
-      if (bestApprox == null) return [];
-
-      final points = bestApprox.map((p) => cv.Point(p.x, p.y)).toList();
-      return _orderCornersByExtremes(points);
+      if (best == null) return [];
+      return _orderCornersByExtremes(best.points);
     } finally {
-      bestApprox?.dispose();
-      hierarchy?.dispose();
       contours?.dispose();
-      edges?.dispose();
+      closed?.dispose();
+      closingKernel?.dispose();
+      combinedEdges?.dispose();
+      sobelEdges?.dispose();
+      sobelMag?.dispose();
+      absY?.dispose();
+      absX?.dispose();
+      sobelY?.dispose();
+      sobelX?.dispose();
+      cannyEdges?.dispose();
       blurred?.dispose();
+      equalized?.dispose();
+      clahe?.dispose();
       gray?.dispose();
     }
+  }
+
+  /// Evaluates one contour as a quadrilateral candidate and returns a score
+  /// in `[0, 1]`. Returns `null` if the candidate fails any geometric gate.
+  ///
+  /// Scoring weights (sum to 1.0):
+  ///   - 0.40 angle: how close interior angles are to 90°
+  ///   - 0.30 aspect: closeness to known document ratios (anchored at 1.41)
+  ///   - 0.30 area: relative size in the frame
+  static _Candidate? _evaluateCandidate(
+    cv.Contour contour,
+    double area,
+    int frameW,
+    int frameH,
+  ) {
+    final perimeter = cv.arcLength(contour, true);
+
+    // Try multiple epsilons before falling back. This recovers the common
+    // "approxPolyDP returned 5 points" case caused by one slightly noisy
+    // corner.
+    cv.VecPoint? quad;
+    bool isPerfect = false;
+    for (final factor in _approxFactors) {
+      final approx = cv.approxPolyDP(contour, factor * perimeter, true);
+      if (approx.length == 4) {
+        quad?.dispose();
+        quad = approx;
+        isPerfect = true;
+        break;
+      }
+      approx.dispose();
+    }
+
+    cv.VecPoint? boxVec;
+    if (quad == null) {
+      // Fallback: minAreaRect bounding quadrilateral. Marked as not-perfect
+      // so the UI shows a tentative (red) overlay rather than triggering
+      // auto-capture.
+      final rect = cv.minAreaRect(contour);
+      final boxMat = cv.boxPoints(rect);
+      boxVec = cv.VecPoint.fromList(
+        boxMat
+            .toList()
+            .map((p) => cv.Point(p.x.toInt(), p.y.toInt()))
+            .toList(),
+      );
+      boxMat.dispose();
+      quad = boxVec;
+    }
+
+    try {
+      if (quad.length != 4) return null;
+
+      // Convexity gate: real documents are always convex from a camera POV.
+      if (!cv.isContourConvex(quad)) return null;
+
+      // Aspect ratio gate via minAreaRect (orientation-agnostic).
+      final rect = cv.minAreaRect(contour);
+      final w = rect.size.width;
+      final h = rect.size.height;
+      if (w == 0 || h == 0) return null;
+      final ratio = w > h ? w / h : h / w;
+      if (ratio < _minAspectRatio || ratio > _maxAspectRatio) return null;
+
+      final pts = quad.map((p) => cv.Point(p.x, p.y)).toList();
+      final ordered = _orderCorners(pts);
+
+      // Interior-angle gate.
+      final angles = _interiorAngles(ordered);
+      final avgDev = angles
+              .map((a) => (a - 90.0).abs())
+              .reduce((a, b) => a + b) /
+          4.0;
+      if (avgDev > _maxAvgAngleDeviation) return null;
+
+      // --- Component scores in [0, 1] ---
+      final angleScore = (1.0 - avgDev / 30.0).clamp(0.0, 1.0);
+      final aspectScore =
+          (1.0 - (ratio - 1.41).abs() / 0.6).clamp(0.0, 1.0);
+      final areaScore =
+          (area / (frameW * frameH)).clamp(0.0, 1.0);
+
+      final score = angleScore * 0.40 + aspectScore * 0.30 + areaScore * 0.30;
+
+      return _Candidate(points: ordered, isPerfect: isPerfect, score: score);
+    } finally {
+      quad.dispose();
+    }
+  }
+
+  /// Returns the four interior angles (degrees) of an ordered quadrilateral.
+  static List<double> _interiorAngles(List<cv.Point> pts) {
+    final out = List<double>.filled(4, 0);
+    for (var i = 0; i < 4; i++) {
+      final prev = pts[(i + 3) % 4];
+      final curr = pts[i];
+      final next = pts[(i + 1) % 4];
+      final v1x = (prev.x - curr.x).toDouble();
+      final v1y = (prev.y - curr.y).toDouble();
+      final v2x = (next.x - curr.x).toDouble();
+      final v2y = (next.y - curr.y).toDouble();
+      final n1 = math.sqrt(v1x * v1x + v1y * v1y);
+      final n2 = math.sqrt(v2x * v2x + v2y * v2y);
+      if (n1 == 0 || n2 == 0) {
+        out[i] = 0;
+        continue;
+      }
+      final cosA = ((v1x * v2x + v1y * v2y) / (n1 * n2)).clamp(-1.0, 1.0);
+      out[i] = math.acos(cosA) * 180.0 / math.pi;
+    }
+    return out;
   }
 
   /// Orders four corner points as [top-left, top-right, bottom-right, bottom-left]
@@ -292,12 +516,10 @@ class EdgeDetectionService {
   static List<cv.Point> _orderCorners(List<cv.Point> pts) {
     if (pts.length != 4) return pts;
 
-    // TL has the smallest x+y sum; BR has the largest.
     pts.sort((a, b) => (a.x + a.y).compareTo(b.x + b.y));
     final tl = pts.first;
     final br = pts.last;
 
-    // Of the remaining two, TR has the smallest y-x difference; BL the largest.
     final remaining = [pts[1], pts[2]];
     remaining.sort((a, b) => (a.y - a.x).compareTo(b.y - b.x));
     final tr = remaining.first;
@@ -317,12 +539,7 @@ class EdgeDetectionService {
     final leftMost = [pts[0], pts[1]]..sort((a, b) => a.y.compareTo(b.y));
     final rightMost = [pts[2], pts[3]]..sort((a, b) => a.y.compareTo(b.y));
 
-    final tl = leftMost[0];
-    final bl = leftMost[1];
-    final tr = rightMost[0];
-    final br = rightMost[1];
-
-    return [tl, tr, br, bl];
+    return [leftMost[0], rightMost[0], rightMost[1], leftMost[1]];
   }
 
   static cv.Mat _toGrayscale(cv.Mat input) {
@@ -333,16 +550,21 @@ class EdgeDetectionService {
       return cv.Mat.empty();
     }
   }
+}
 
-  /// Applies a bilateral filter for edge-preserving noise reduction.
-  ///
-  /// Preferred over Gaussian blur because it smooths intra-region noise while
-  /// keeping sharp intensity gradients at the document boundary intact.
-  static cv.Mat _applyBilateralFilter(cv.Mat gray) {
-    try {
-      return cv.bilateralFilter(gray, _bilateralD, _bilateralSigmaColor, _bilateralSigmaSpace);
-    } catch (_) {
-      return cv.Mat.empty();
-    }
-  }
+class _RankedContour {
+  _RankedContour({required this.contour, required this.area});
+  final cv.Contour contour;
+  final double area;
+}
+
+class _Candidate {
+  _Candidate({
+    required this.points,
+    required this.isPerfect,
+    required this.score,
+  });
+  final List<cv.Point> points;
+  final bool isPerfect;
+  final double score;
 }

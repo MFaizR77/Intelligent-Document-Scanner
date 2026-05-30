@@ -21,6 +21,7 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../../config/pcd_params.dart';
 import '../../models/scan_artifact.dart';
+import '../../models/scan_engine.dart';
 import '../../utils/image_utils.dart';
 import 'edge_detection.dart';
 import 'enhancement.dart';
@@ -49,12 +50,18 @@ class DocumentPipeline {
   /// Bila [overrideCorners] disediakan (mis. dari CropScreen manual),
   /// auto-detect dilewati. Jika tidak, pipeline mencoba auto-detect; bila
   /// gagal, gunakan rectangle penuh (no warp) sebagai fallback.
+  ///
+  /// Bila [skipGeometry] true (mis. gambar dari ML Kit Document Scanner yang
+  /// sudah ter-crop & lurus), tahap deteksi sudut + warp perspektif dilewati
+  /// sepenuhnya — pipeline langsung menjalankan tahap enhancement PCD hilir.
   static Future<ScanArtifact> runFromFile({
     required String inputPath,
     required String outputPath,
     required PcdProfile profile,
     required EnhancementMode mode,
     List<Offset>? overrideCorners,
+    bool skipGeometry = false,
+    ScanEngine engine = ScanEngine.pcd,
   }) async {
     final stopwatch = Stopwatch()..start();
 
@@ -77,7 +84,11 @@ class DocumentPipeline {
       // disediakan dalam koordinat raw. Asumsi: caller selalu memberi
       // koordinat dalam ruang RAW (input file), pipeline yang scale-down.
       List<Offset> cornersWorking;
-      if (overrideCorners != null && overrideCorners.length == 4) {
+      if (skipGeometry) {
+        // Gambar sudah diluruskan oleh engine lain (ML Kit). Tidak ada
+        // deteksi/warp; pakai full frame sebagai "korner" untuk metadata.
+        cornersWorking = _fullFrameCorners(working);
+      } else if (overrideCorners != null && overrideCorners.length == 4) {
         cornersWorking = overrideCorners
             .map((o) => Offset(o.dx * scale, o.dy * scale))
             .toList();
@@ -89,7 +100,11 @@ class DocumentPipeline {
         }
       }
 
-      warped = warpToDocument(working, cornersWorking);
+      // ML Kit sudah melakukan warp; warp ulang dengan full-frame corners
+      // hanya membuang siklus. Untuk jalur PCD, warp tetap dijalankan.
+      warped = skipGeometry
+          ? working.clone()
+          : warpToDocument(working, cornersWorking);
 
       enhanced = EnhancementService.enhance(warped, mode, profile: profile);
 
@@ -115,6 +130,7 @@ class DocumentPipeline {
         cornersImage: cornersRaw,
         documentPlanLabel: profile.label,
         enhancementMode: mode.label,
+        engine: engine,
         blurScore: metrics.blurScore,
         totalDuration: stopwatch.elapsed,
         imageWidth: raw.cols,

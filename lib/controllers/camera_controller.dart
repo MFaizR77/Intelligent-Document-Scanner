@@ -81,6 +81,16 @@ class AppCameraController {
     }
   }
 
+  /// Releases the native camera (stops stream + disposes controller) but keeps
+  /// this wrapper **reusable** — a subsequent [initialize] will create a fresh
+  /// controller. Use this for tab-switch / app-background to free the sensor
+  /// without tearing down the whole scanner.
+  Future<void> release() async {
+    await stopImageStream();
+    await _controller?.dispose();
+    _controller = null;
+  }
+
   Future<void> dispose() async {
     _isDisposed = true;
     await stopImageStream();

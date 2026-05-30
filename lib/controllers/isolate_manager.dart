@@ -226,9 +226,11 @@ class IsolateManager {
     return packed;
   }
 
-  /// Terminates the background isolate and releases all ports.
-  void dispose() {
-    _isDisposed = true;
+  /// Terminates the background isolate and releases all ports, but keeps this
+  /// manager **reusable** — a subsequent [spawnProcessingIsolate] will spawn a
+  /// fresh isolate. Use this when releasing the camera on tab-switch or app
+  /// background, where the scanner may be resumed later.
+  void shutdown() {
     _backgroundSendPort?.send(<String, dynamic>{'type': 'dispose'});
     _backgroundIsolate?.kill();
     _mainPortSubscription?.cancel();
@@ -238,5 +240,12 @@ class IsolateManager {
     _mainPort = null;
     _mainPortSubscription = null;
     _isListening = false;
+  }
+
+  /// Terminates the background isolate and releases all ports **permanently**.
+  /// After this, the manager cannot be reused.
+  void dispose() {
+    _isDisposed = true;
+    shutdown();
   }
 }

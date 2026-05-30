@@ -1,6 +1,8 @@
 // lib/models/scan_artifact.dart
 import 'dart:ui';
 
+import 'scan_engine.dart';
+
 /// Hasil sekali jalan pipeline PCD (deteksi → warp → enhance).
 /// Belum tersimpan ke Hive; itu tugas ScanRepository di M4.
 class ScanArtifact {
@@ -14,6 +16,7 @@ class ScanArtifact {
     required this.totalDuration,
     required this.imageWidth,
     required this.imageHeight,
+    this.engine = ScanEngine.pcd,
   });
 
   /// JPG mentah (sebelum warp & enhance).
@@ -28,6 +31,9 @@ class ScanArtifact {
 
   final String documentPlanLabel;
   final String enhancementMode;
+
+  /// Engine capture/deteksi yang menghasilkan artifact ini (PCD / ML Kit).
+  final ScanEngine engine;
 
   /// Variance Laplacian — proxy ketajaman. Lebih besar = lebih tajam.
   final double blurScore;
