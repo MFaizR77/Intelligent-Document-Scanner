@@ -2,6 +2,7 @@ import 'package:flutter/foundation.dart';
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 
 import '../../config/pcd_params.dart';
+import 'ml_scanner.dart';
 
 /// Detects the four corner landmarks of a document in a camera frame using
 /// a pure OpenCV pipeline (no external ML models).
@@ -81,20 +82,26 @@ class EdgeDetectionService {
       final int processedW = processTarget.cols;
       final int processedH = processTarget.rows;
 
-      // --- Contrast stretching ---
-      // NORM_MINMAX forces the full 0-255 intensity range, making low-contrast
-      // documents (e.g. coloured ID cards on a similarly-toned surface) stand
-      // out clearly against the background before edge detection.
-      gray = _toGrayscale(processTarget);
-      cv.normalize(gray, gray, alpha: 0, beta: 255, normType: cv.NORM_MINMAX);
-
-      // --- Edge-preserving noise reduction ---
-      blurred = _applyBilateralFilter(gray);
-
-      // --- Canny edge detection ---
-      // Lower thresholds (30, 100) improve recall for faint edges at document
-      // corners, such as those on laminated or glossy ID cards.
-      edges = cv.canny(blurred, 30, 100);
+      // --- Hibrida ML + PCD ---
+      if (MLScannerService.isReady) {
+        final mask = MLScannerService.getSegmentationMask(processTarget);
+        if (mask != null && !mask.isEmpty) {
+          // AI sukses melihat batas kertas! Mask ini sudah siap di-findContours
+          edges = mask;
+        } else {
+          // AI gagal, fallback ke Canny Edge
+          gray = _toGrayscale(processTarget);
+          cv.normalize(gray, gray, alpha: 0, beta: 255, normType: cv.NORM_MINMAX);
+          blurred = _applyBilateralFilter(gray);
+          edges = cv.canny(blurred, 30, 100);
+        }
+      } else {
+        // --- PCD Murni (Fallack jika TFLite belum di-load) ---
+        gray = _toGrayscale(processTarget);
+        cv.normalize(gray, gray, alpha: 0, beta: 255, normType: cv.NORM_MINMAX);
+        blurred = _applyBilateralFilter(gray);
+        edges = cv.canny(blurred, 30, 100);
+      }
 
       // --- Morphological closing ---
       // Bridges discontinuities in the outer document boundary produced by

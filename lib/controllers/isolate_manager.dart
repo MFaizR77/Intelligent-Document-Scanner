@@ -11,6 +11,7 @@ import 'package:opencv_dart/opencv_dart.dart' as cv;
 import '../services/image_processing/edge_detection.dart';
 import '../services/image_processing/enhancement.dart';
 import '../services/image_processing/perspective_transform.dart';
+import '../services/image_processing/ml_scanner.dart';
 import '../utils/image_utils.dart';
 
 /// Manages a dedicated [FlutterIsolate] that runs the OpenCV processing
@@ -73,15 +74,18 @@ class IsolateManager {
     return true;
   }
 
-  @pragma('vm:entry-point')
-  static void _backgroundTaskEntryPoint(SendPort mainSendPort) {
+  static void _backgroundTaskEntryPoint(SendPort mainSendPort) async {
     final receivePort = ReceivePort();
     mainSendPort.send(receivePort.sendPort);
+
+    // Load AI Model di dalam Isolate agar tidak memblokir UI
+    await MLScannerService.loadModel();
 
     receivePort.listen((message) {
       if (message is Map && message['type'] == 'frame') {
         mainSendPort.send(_processFrame(Map<String, dynamic>.from(message)));
       } else if (message is Map && message['type'] == 'dispose') {
+        MLScannerService.dispose();
         receivePort.close();
       }
     });
