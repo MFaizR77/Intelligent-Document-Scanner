@@ -23,6 +23,7 @@ class ScannerScreen extends StatefulWidget {
     super.key,
     this.isActive = true,
     this.returnPayload = false,
+    this.forceEngine = false,
   });
 
   /// True bila tab Scan sedang aktif di [HomeShell]. Saat berubah jadi false
@@ -35,6 +36,11 @@ class ScannerScreen extends StatefulWidget {
   /// [CapturePayload] alih-alih melanjutkan ke ProcessingScreen.
   final bool returnPayload;
 
+  /// Hanya berlaku saat [returnPayload] true. Bila true, langsung mulai jalur
+  /// ML Kit; bila false, langsung mulai jalur kamera PCD — tanpa menampilkan
+  /// chooser (sumber sudah dipilih di [PageCaptureFlow]).
+  final bool forceEngine;
+
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
 }
@@ -45,6 +51,7 @@ class _ScannerScreenState extends State<ScannerScreen>
   late final AutoCaptureController _autoCapture;
 
   bool _mlkitBusy = false;
+  bool _autoStarted = false;
 
   @override
   void initState() {
@@ -55,8 +62,20 @@ class _ScannerScreenState extends State<ScannerScreen>
       scanner: _controller,
       onTrigger: _runCaptureFlow,
     );
-    // Kamera TIDAK di-start otomatis. User memilih mode dulu (chooser),
-    // kamera baru menyala on-demand saat memilih "Scan PCD".
+    // Mode sub-flow (returnPayload): engine sudah dipilih, langsung mulai.
+    if (widget.returnPayload) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _autoStarted) return;
+        _autoStarted = true;
+        if (widget.forceEngine) {
+          _startMlkitScan();
+        } else {
+          _startPcdScan();
+        }
+      });
+    }
+    // Mode normal: kamera TIDAK di-start otomatis. User memilih mode dulu
+    // (chooser), kamera baru menyala on-demand saat memilih "Scan PCD".
   }
 
   @override
@@ -115,7 +134,15 @@ class _ScannerScreenState extends State<ScannerScreen>
     setState(() => _mlkitBusy = true);
     try {
       final rawPath = await MlkitDocumentScannerService.scanToRawJpeg();
-      if (rawPath == null || !mounted) return;
+      if (rawPath == null) {
+        // User batal. Di mode sub-flow (forceEngine), pop supaya tidak
+        // terdampar di chooser kosong.
+        if (mounted && widget.returnPayload && widget.forceEngine) {
+          Navigator.of(context).pop();
+        }
+        return;
+      }
+      if (!mounted) return;
 
       final payload = CapturePayload(
         rawImagePath: rawPath,

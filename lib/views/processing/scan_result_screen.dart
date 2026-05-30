@@ -16,20 +16,16 @@ import 'package:share_plus/share_plus.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/config/pcd_params.dart';
 import 'package:tugasbesar_pcd/controllers/document_session.dart';
-import 'package:tugasbesar_pcd/models/capture_payload.dart';
 import 'package:tugasbesar_pcd/models/scan_artifact.dart';
 import 'package:tugasbesar_pcd/models/scan_engine.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
 import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
 import 'package:tugasbesar_pcd/services/ocr/text_recognition_service.dart';
-import 'package:tugasbesar_pcd/services/scanner/mlkit_document_scanner_service.dart';
 import 'package:tugasbesar_pcd/services/storage/file_service.dart';
 import 'package:tugasbesar_pcd/services/storage/pdf_export_service.dart';
 import 'package:tugasbesar_pcd/services/storage/scan_repository.dart';
-import 'package:tugasbesar_pcd/views/processing/processing_screen.dart';
-import 'package:tugasbesar_pcd/views/scanner/picker_entry.dart';
-import 'package:tugasbesar_pcd/views/scanner/scanner_screen.dart';
+import 'package:tugasbesar_pcd/views/scanner/page_capture_flow.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 import 'package:tugasbesar_pcd/widgets/document/before_after_slider.dart';
 
@@ -125,94 +121,14 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
   // ---------------- Multi-page: tambah / foto ulang halaman ----------------
 
-  /// Pilih sumber halaman baru (Kamera PCD / ML Kit / Galeri) → CapturePayload.
-  Future<CapturePayload?> _pickNewPagePayload() async {
-    final plan = _session.active.documentPlanLabel;
-    final source = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: AppColors.surface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 12),
-            Container(
-              width: 44,
-              height: 5,
-              decoration: BoxDecoration(
-                color: Colors.white24,
-                borderRadius: BorderRadius.circular(99),
-              ),
-            ),
-            const SizedBox(height: 8),
-            ListTile(
-              leading: const Icon(Icons.camera_alt_rounded,
-                  color: AppColors.primary),
-              title: const Text('Kamera (PCD)'),
-              onTap: () => Navigator.pop(ctx, 'pcd'),
-            ),
-            if (MlkitDocumentScannerService.isSupported)
-              ListTile(
-                leading: const Icon(Icons.document_scanner_rounded,
-                    color: AppColors.blue),
-                title: const Text('Kamera (ML Kit)'),
-                onTap: () => Navigator.pop(ctx, 'mlkit'),
-              ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined,
-                  color: Colors.white70),
-              title: const Text('Galeri'),
-              onTap: () => Navigator.pop(ctx, 'gallery'),
-            ),
-            const SizedBox(height: 12),
-          ],
-        ),
-      ),
-    );
-    if (source == null || !mounted) return null;
-
-    switch (source) {
-      case 'gallery':
-        final payload =
-            await PickerEntry.pickPayloadFromGallery(documentPlan: plan);
-        return payload;
-      case 'mlkit':
-      case 'pcd':
-        // Buka scanner dalam mode "return payload".
-        return Navigator.of(context).push<CapturePayload>(
-          MaterialPageRoute<CapturePayload>(
-            builder: (_) => ScannerScreen(
-              isActive: true,
-              returnPayload: true,
-            ),
-          ),
-        );
-    }
-    return null;
-  }
-
-  /// Jalankan pipeline untuk [payload] dan kembalikan ScanArtifact.
-  Future<ScanArtifact?> _processPayload(CapturePayload payload) async {
-    return Navigator.of(context).push<ScanArtifact>(
-      MaterialPageRoute<ScanArtifact>(
-        builder: (_) => ProcessingScreen(
-          payload: payload,
-          returnArtifact: true,
-        ),
-      ),
-    );
-  }
-
   Future<void> _addPage() async {
     if (_addingPage) return;
     setState(() => _addingPage = true);
     try {
-      final payload = await _pickNewPagePayload();
-      if (payload == null || !mounted) return;
-      final artifact = await _processPayload(payload);
+      final artifact = await PageCaptureFlow.captureOne(
+        context,
+        documentPlan: _session.active.documentPlanLabel,
+      );
       if (artifact == null || !mounted) return;
       _session.addPage(artifact);
       setState(() => _saved = null);
@@ -225,9 +141,10 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     if (_addingPage) return;
     setState(() => _addingPage = true);
     try {
-      final payload = await _pickNewPagePayload();
-      if (payload == null || !mounted) return;
-      final artifact = await _processPayload(payload);
+      final artifact = await PageCaptureFlow.captureOne(
+        context,
+        documentPlan: _session.active.documentPlanLabel,
+      );
       if (artifact == null || !mounted) return;
       _session.replaceAt(index, artifact);
       setState(() => _saved = null);

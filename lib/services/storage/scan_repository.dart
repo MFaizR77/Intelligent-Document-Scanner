@@ -49,6 +49,36 @@ class ScanRepository {
   /// Listenable untuk drive UI (mis. HistoryScreen).
   ValueListenable<Box<ScanResult>> listenable() => _box.listenable();
 
+  /// Perbarui entry yang sudah tersimpan (nama dokumen / daftar halaman).
+  /// Menyimpan kembali ke key Hive yang sama supaya posisi & identitas entry
+  /// tetap. Mengembalikan entry baru hasil update.
+  Future<ScanResult> update(
+    ScanResult old, {
+    String? title,
+    List<String>? pagePaths,
+  }) async {
+    final pages = (pagePaths != null && pagePaths.isNotEmpty)
+        ? pagePaths
+        : old.pages;
+    final entry = ScanResult(
+      imagePath: pages.first,
+      scanDate: old.scanDate,
+      documentType: old.documentType,
+      confidenceScore: old.confidenceScore,
+      title: (title != null && title.trim().isNotEmpty)
+          ? title.trim()
+          : old.title,
+      pagePaths: pages,
+    );
+    final key = old.key;
+    if (key != null) {
+      await _box.put(key, entry);
+    } else {
+      await _box.add(entry);
+    }
+    return entry;
+  }
+
   List<ScanResult> all() {
     final list = _box.values.toList();
     list.sort((a, b) => b.scanDate.compareTo(a.scanDate));
