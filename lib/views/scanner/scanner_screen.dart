@@ -19,12 +19,21 @@ import 'package:tugasbesar_pcd/widgets/scanner/scanner_controls.dart';
 import 'package:tugasbesar_pcd/widgets/scanner/scanner_status_chip.dart';
 
 class ScannerScreen extends StatefulWidget {
-  const ScannerScreen({super.key, this.isActive = true});
+  const ScannerScreen({
+    super.key,
+    this.isActive = true,
+    this.returnPayload = false,
+  });
 
   /// True bila tab Scan sedang aktif di [HomeShell]. Saat berubah jadi false
   /// (user pindah tab), kamera + isolate dilepas supaya tidak terus berjalan
   /// di background (penyebab HP panas / kebocoran kamera).
   final bool isActive;
+
+  /// Bila true, screen ini dipakai sebagai sub-flow "tambah/foto ulang
+  /// halaman": setelah capture+crop selesai, ia mem-`pop` dengan
+  /// [CapturePayload] alih-alih melanjutkan ke ProcessingScreen.
+  final bool returnPayload;
 
   @override
   State<ScannerScreen> createState() => _ScannerScreenState();
@@ -114,6 +123,11 @@ class _ScannerScreenState extends State<ScannerScreen>
         engine: ScanEngine.mlkit,
       );
 
+      if (widget.returnPayload) {
+        Navigator.of(context).pop<CapturePayload>(payload);
+        return;
+      }
+
       await Navigator.of(context).push(
         MaterialPageRoute<void>(
           builder: (_) => ProcessingScreen(payload: payload),
@@ -135,6 +149,21 @@ class _ScannerScreenState extends State<ScannerScreen>
   }
 
   Future<void> _openGallery() async {
+    if (widget.returnPayload) {
+      final payload = await PickerEntry.pickPayloadFromGallery(
+        documentPlan: _controller.documentPlan,
+      );
+      if (payload == null || !mounted) return;
+      final adjusted = await Navigator.of(context).push<CapturePayload>(
+        MaterialPageRoute<CapturePayload>(
+          builder: (_) => CropScreen(payload: payload),
+        ),
+      );
+      if (!mounted || adjusted == null) return;
+      Navigator.of(context).pop<CapturePayload>(adjusted);
+      return;
+    }
+
     await PickerEntry.pickFromGallery(
       context,
       documentPlan: _controller.documentPlan,
@@ -163,6 +192,14 @@ class _ScannerScreenState extends State<ScannerScreen>
     if (adjusted == null) {
       // User batal — restart stream realtime.
       await _controller.resumeDetectionStream();
+      return;
+    }
+
+    // Mode "tambah/foto ulang halaman": kembalikan payload ke editor.
+    if (widget.returnPayload) {
+      await _controller.releaseCamera();
+      if (!mounted) return;
+      Navigator.of(context).pop<CapturePayload>(adjusted);
       return;
     }
 

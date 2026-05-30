@@ -1,14 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
+import 'package:tugasbesar_pcd/services/storage/user_prefs.dart';
 import 'package:tugasbesar_pcd/views/home/home_shell.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 
-/// Login screen — offline mode (Hive only). Tidak ada autentikasi server,
-/// jadi screen ini cuma intro card + tombol "Mulai" yang langsung ke home.
-class LoginScreen extends StatelessWidget {
+/// Login screen — offline mode (Hive only). Tidak ada autentikasi server.
+/// Screen ini meminta nama user (disimpan lokal via [UserPrefs]) lalu masuk
+/// ke Home. Nama dipakai untuk sapaan di Beranda & identitas di Profile.
+class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
-  void _enterApp(BuildContext context) {
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final TextEditingController _nameController = TextEditingController();
+  bool _submitted = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Pre-fill kalau user sudah pernah mengisi nama.
+    _nameController.text = UserPrefs.userName ?? '';
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _enterApp() async {
+    final name = _nameController.text.trim();
+    setState(() => _submitted = true);
+    if (name.isEmpty) return;
+
+    await UserPrefs.setUserName(name);
+    if (!mounted) return;
     Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(builder: (_) => const HomeShell()),
     );
@@ -16,75 +45,119 @@ class LoginScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final showError = _submitted && _nameController.text.trim().isEmpty;
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: Padding(
+        child: SingleChildScrollView(
           padding: const EdgeInsets.all(28),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 30),
-              const _BrandHeader(),
-              const SizedBox(height: 56),
-              const Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(text: 'Selamat\n'),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: MediaQuery.of(context).size.height - 56,
+            ),
+            child: IntrinsicHeight(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const SizedBox(height: 24),
+                  const _BrandHeader(),
+                  const SizedBox(height: 44),
+                  const Text.rich(
                     TextSpan(
-                      text: 'datang kembali.',
-                      style: TextStyle(
-                        color: AppColors.primary,
-                        fontStyle: FontStyle.italic,
+                      children: [
+                        TextSpan(text: 'Selamat\n'),
+                        TextSpan(
+                          text: 'datang.',
+                          style: TextStyle(
+                            color: AppColors.primary,
+                            fontStyle: FontStyle.italic,
+                          ),
+                        ),
+                      ],
+                    ),
+                    style: TextStyle(
+                      fontSize: 33,
+                      height: 1.12,
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                  const Text(
+                    'Aplikasi berjalan offline. Semua scan disimpan di perangkat '
+                    'lewat Hive — tidak butuh akun, tidak butuh internet.',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 15,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  const Text(
+                    'Siapa nama kamu?',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 15,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  TextField(
+                    controller: _nameController,
+                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                    textCapitalization: TextCapitalization.words,
+                    textInputAction: TextInputAction.done,
+                    onChanged: (_) {
+                      if (_submitted) setState(() {});
+                    },
+                    onSubmitted: (_) => _enterApp(),
+                    decoration: InputDecoration(
+                      hintText: 'mis. Muhammad Faiz',
+                      hintStyle: const TextStyle(color: Colors.white30),
+                      prefixIcon:
+                          const Icon(Icons.person_outline, color: Colors.white54),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      errorText: showError ? 'Nama tidak boleh kosong' : null,
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
+                        borderSide: const BorderSide(color: AppColors.primary),
+                      ),
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(14),
                       ),
                     ),
-                  ],
-                ),
-                style: TextStyle(
-                  fontSize: 33,
-                  height: 1.12,
-                  fontWeight: FontWeight.w900,
-                ),
+                  ),
+                  const SizedBox(height: 28),
+                  const _FeatureRow(
+                    icon: Icons.bolt_outlined,
+                    text: 'Edge detection realtime di kamera',
+                  ),
+                  const SizedBox(height: 14),
+                  const _FeatureRow(
+                    icon: Icons.lock_outline,
+                    text: 'Penyimpanan lokal — privasi sepenuhnya di tangan kamu',
+                  ),
+                  const Spacer(),
+                  const SizedBox(height: 20),
+                  AppPrimaryButton(
+                    label: 'Mulai',
+                    icon: Icons.arrow_forward,
+                    onPressed: _enterApp,
+                  ),
+                  const SizedBox(height: 14),
+                  const Center(
+                    child: Text(
+                      'Versi 0.1 · Tugas Besar PCD',
+                      style: TextStyle(color: Colors.white38, fontSize: 12),
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 14),
-              const Text(
-                'Aplikasi berjalan offline. Semua scan disimpan di perangkat '
-                'lewat Hive — tidak butuh akun, tidak butuh internet.',
-                style: TextStyle(
-                  color: Colors.white70,
-                  fontSize: 15,
-                  height: 1.4,
-                ),
-              ),
-              const SizedBox(height: 36),
-              const _FeatureRow(
-                icon: Icons.bolt_outlined,
-                text: 'Edge detection realtime di kamera',
-              ),
-              const SizedBox(height: 14),
-              const _FeatureRow(
-                icon: Icons.layers_outlined,
-                text: 'Pipeline PCD: warp, shadow removal, enhancement',
-              ),
-              const SizedBox(height: 14),
-              const _FeatureRow(
-                icon: Icons.lock_outline,
-                text: 'Penyimpanan lokal — privasi sepenuhnya di tangan kamu',
-              ),
-              const Spacer(),
-              AppPrimaryButton(
-                label: 'Mulai',
-                icon: Icons.arrow_forward,
-                onPressed: () => _enterApp(context),
-              ),
-              const SizedBox(height: 14),
-              const Center(
-                child: Text(
-                  'Versi 0.1 · Tugas Besar PCD',
-                  style: TextStyle(color: Colors.white38, fontSize: 12),
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),

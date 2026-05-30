@@ -20,14 +20,27 @@ class ScanRepository {
 
   /// Simpan hasil pipeline. Path yang disimpan adalah enhancedPath.
   /// [docType] biasanya diambil dari [ScanArtifact.documentPlanLabel].
-  Future<ScanResult> save(ScanArtifact artifact, {String? docType}) async {
+  /// [title] nama dokumen yang diberi user (opsional).
+  /// [pagePaths] daftar halaman untuk dokumen multi-halaman; bila null/kosong
+  /// dokumen diperlakukan single-page memakai enhancedPath.
+  Future<ScanResult> save(
+    ScanArtifact artifact, {
+    String? docType,
+    String? title,
+    List<String>? pagePaths,
+  }) async {
     // Confidence proxy: blurScore yang di-clip ke [0..1] dengan saturasi 200.
     final conf = (artifact.blurScore / 200).clamp(0.0, 1.0);
+    final pages = (pagePaths != null && pagePaths.isNotEmpty)
+        ? pagePaths
+        : <String>[artifact.enhancedPath];
     final entry = ScanResult(
-      imagePath: artifact.enhancedPath,
+      imagePath: pages.first,
       scanDate: DateTime.now(),
       documentType: docType ?? artifact.documentPlanLabel,
       confidenceScore: conf,
+      title: (title != null && title.trim().isNotEmpty) ? title.trim() : null,
+      pagePaths: pages,
     );
     await _box.add(entry);
     return entry;
@@ -44,5 +57,12 @@ class ScanRepository {
 
   Future<void> delete(ScanResult result) async {
     await result.delete();
+  }
+
+  /// Hapus seluruh entry riwayat. Mengembalikan jumlah yang terhapus.
+  Future<int> deleteAll() async {
+    final count = _box.length;
+    await _box.clear();
+    return count;
   }
 }

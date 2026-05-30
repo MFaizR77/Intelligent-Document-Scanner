@@ -165,6 +165,7 @@ class _HistoryGridCard extends StatelessWidget {
     final file = File(result.imagePath);
     final exists = file.existsSync();
     final pct = (result.confidenceScore * 100).clamp(0, 100).toStringAsFixed(0);
+    final pageCount = result.pageCount;
     return InkWell(
       onTap: () {
         Navigator.of(context).push(
@@ -184,26 +185,61 @@ class _HistoryGridCard extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Expanded(
-              child: ClipRRect(
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(11),
-                ),
-                child: exists
-                    ? Image.file(
-                        file,
-                        fit: BoxFit.cover,
-                        width: double.infinity,
-                        gaplessPlayback: true,
-                      )
-                    : Container(
-                        color: AppColors.elevated,
-                        child: const Center(
-                          child: Icon(
-                            Icons.broken_image,
-                            color: Colors.white24,
-                          ),
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: const BorderRadius.vertical(
+                        top: Radius.circular(11),
+                      ),
+                      child: exists
+                          ? Image.file(
+                              file,
+                              fit: BoxFit.cover,
+                              width: double.infinity,
+                              gaplessPlayback: true,
+                            )
+                          : Container(
+                              color: AppColors.elevated,
+                              child: const Center(
+                                child: Icon(
+                                  Icons.broken_image,
+                                  color: Colors.white24,
+                                ),
+                              ),
+                            ),
+                    ),
+                  ),
+                  if (pageCount > 1)
+                    Positioned(
+                      right: 6,
+                      top: 6,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.62),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.copy_all,
+                                size: 11, color: Colors.white),
+                            const SizedBox(width: 4),
+                            Text(
+                              '$pageCount',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 11,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ],
                         ),
                       ),
+                    ),
+                ],
               ),
             ),
             Padding(
@@ -212,7 +248,9 @@ class _HistoryGridCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    result.documentType,
+                    result.displayTitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w800),
                   ),
                   const SizedBox(height: 2),

@@ -16,6 +16,28 @@ import 'package:tugasbesar_pcd/views/scanner/crop_screen.dart';
 class PickerEntry {
   PickerEntry._();
 
+  /// Pilih satu gambar dari galeri dan kembalikan [CapturePayload] (tanpa
+  /// navigasi lanjut). Dipakai oleh editor multi-halaman untuk menambah
+  /// halaman dari galeri. Return null kalau user batal.
+  static Future<CapturePayload?> pickPayloadFromGallery({
+    String documentPlan = 'Auto',
+  }) async {
+    final picker = ImagePicker();
+    final XFile? file = await picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 95,
+    );
+    if (file == null) return null;
+
+    final dst = await FileService.newRawJpegPath();
+    await File(file.path).copy(dst);
+
+    return CapturePayload(
+      rawImagePath: dst,
+      documentPlan: documentPlan,
+    );
+  }
+
   /// Pilih satu gambar dari galeri, copy ke direktori scans/raw,
   /// lalu push CropScreen → ProcessingScreen.
   ///

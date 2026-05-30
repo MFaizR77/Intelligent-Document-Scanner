@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'package:tugasbesar_pcd/views/auth/login_screen.dart';
 import 'package:tugasbesar_pcd/views/onboarding/onboarding_screen.dart';
 
 class SplashScreen extends StatefulWidget {

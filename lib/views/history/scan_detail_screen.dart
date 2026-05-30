@@ -43,7 +43,8 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     setState(() => _ocrLoading = true);
     final svc = TextRecognitionService();
     try {
-      final result = await svc.recognize(File(widget.result.imagePath));
+      // OCR halaman pertama saja.
+      final result = await svc.recognize(File(widget.result.pages.first));
       if (!mounted) return;
       _showOcrSheet(result);
     } catch (e) {
@@ -111,7 +112,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
 
   Future<void> _exportPdf() async {
     final TextEditingController nameController = TextEditingController(
-      text: '${widget.result.documentType}_${DateTime.now().millisecondsSinceEpoch}',
+      text: '${widget.result.displayTitle}_${DateTime.now().millisecondsSinceEpoch}',
     );
 
     final customName = await showDialog<String>(
@@ -148,7 +149,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
 
     try {
       final path = await PdfExportService.instance.exportImages(
-        [widget.result.imagePath],
+        widget.result.pages,
         hint: widget.result.documentType,
         exactName: finalName,
       );
@@ -186,10 +187,13 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
       ),
     );
     if (ok != true) return;
-    try {
-      final f = File(widget.result.imagePath);
-      if (f.existsSync()) await f.delete();
-    } catch (_) {}
+    // Hapus semua file halaman (best-effort).
+    for (final p in widget.result.pages) {
+      try {
+        final f = File(p);
+        if (f.existsSync()) await f.delete();
+      } catch (_) {}
+    }
     await ScanRepository.instance.delete(widget.result);
     if (!mounted) return;
     Navigator.of(context).pop();
@@ -198,10 +202,14 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
   @override
   Widget build(BuildContext context) {
     final r = widget.result;
-    final file = File(r.imagePath);
+    final pages = r.pages;
     int size = 0;
     try {
-      size = file.existsSync() ? file.lengthSync() : 0;
+      // Ukuran total semua halaman.
+      for (final p in pages) {
+        final f = File(p);
+        if (f.existsSync()) size += f.lengthSync();
+      }
     } catch (_) {}
 
     return Scaffold(
@@ -209,7 +217,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.background,
         title: Text(
-          r.documentType,
+          r.displayTitle,
           style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
         ),
         actions: [
@@ -224,20 +232,13 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
         children: [
           AspectRatio(
             aspectRatio: 3 / 4,
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: file.existsSync()
-                  ? Image.file(file, fit: BoxFit.cover, gaplessPlayback: true)
-                  : Container(
-                      color: AppColors.elevated,
-                      child: const Center(
-                        child: Icon(Icons.broken_image, color: Colors.white24),
-                      ),
-                    ),
-            ),
+            child: _PageViewer(pages: pages),
           ),
           const SizedBox(height: 20),
+          _MetaRow(label: 'Nama dokumen', value: r.displayTitle),
           _MetaRow(label: 'Tipe dokumen', value: r.documentType),
+          if (pages.length > 1)
+            _MetaRow(label: 'Jumlah halaman', value: '${pages.length}'),
           _MetaRow(label: 'Tanggal scan', value: _formatDateTime(r.scanDate)),
           _MetaRow(
             label: 'Confidence',
@@ -246,7 +247,6 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
             valueColor: AppColors.primary,
           ),
           _MetaRow(label: 'Ukuran file', value: _humanFileSize(size)),
-          _MetaRow(label: 'Path', value: r.imagePath),
           const SizedBox(height: 16),
           AppPrimaryButton(
             label: _ocrLoading ? 'OCR berjalan...' : 'Ekstrak Teks (OCR)',
@@ -309,6 +309,81 @@ class _MetaRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Penampil halaman dokumen. Single-page → satu gambar; multi-page → PageView
+/// horizontal dengan indikator halaman.
+class _PageViewer extends StatefulWidget {
+  const _PageViewer({required this.pages});
+
+  final List<String> pages;
+
+  @override
+  State<_PageViewer> createState() => _PageViewerState();
+}
+
+class _PageViewerState extends State<_PageViewer> {
+  final PageController _controller = PageController();
+  int _index = 0;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Widget _buildImage(String path) {
+    final file = File(path);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(14),
+      child: file.existsSync()
+          ? Image.file(file, fit: BoxFit.cover, gaplessPlayback: true)
+          : Container(
+              color: AppColors.elevated,
+              child: const Center(
+                child: Icon(Icons.broken_image, color: Colors.white24),
+              ),
+            ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (widget.pages.length == 1) {
+      return SizedBox.expand(child: _buildImage(widget.pages.first));
+    }
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: PageView.builder(
+            controller: _controller,
+            itemCount: widget.pages.length,
+            onPageChanged: (i) => setState(() => _index = i),
+            itemBuilder: (_, i) => _buildImage(widget.pages[i]),
+          ),
+        ),
+        Positioned(
+          right: 10,
+          top: 10,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.62),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '${_index + 1}/${widget.pages.length}',
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

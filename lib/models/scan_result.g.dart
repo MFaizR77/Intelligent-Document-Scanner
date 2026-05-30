@@ -21,13 +21,15 @@ class ScanResultAdapter extends TypeAdapter<ScanResult> {
       scanDate: fields[1] as DateTime,
       documentType: fields[2] as String,
       confidenceScore: fields[3] as double,
+      title: fields[4] as String?,
+      pagePaths: (fields[5] as List?)?.cast<String>(),
     );
   }
 
   @override
   void write(BinaryWriter writer, ScanResult obj) {
     writer
-      ..writeByte(4)
+      ..writeByte(6)
       ..writeByte(0)
       ..write(obj.imagePath)
       ..writeByte(1)
@@ -35,7 +37,11 @@ class ScanResultAdapter extends TypeAdapter<ScanResult> {
       ..writeByte(2)
       ..write(obj.documentType)
       ..writeByte(3)
-      ..write(obj.confidenceScore);
+      ..write(obj.confidenceScore)
+      ..writeByte(4)
+      ..write(obj.title)
+      ..writeByte(5)
+      ..write(obj.pagePaths);
   }
 
   @override

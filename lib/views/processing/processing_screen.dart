@@ -15,9 +15,18 @@ import 'package:tugasbesar_pcd/services/storage/file_service.dart';
 import 'package:tugasbesar_pcd/views/processing/scan_result_screen.dart';
 
 class ProcessingScreen extends StatefulWidget {
-  const ProcessingScreen({super.key, required this.payload});
+  const ProcessingScreen({
+    super.key,
+    required this.payload,
+    this.returnArtifact = false,
+  });
 
   final CapturePayload payload;
+
+  /// Bila true, screen ini me-`pop` dengan [ScanArtifact] sebagai hasil
+  /// (dipakai saat "Tambah Halaman" / "Foto Ulang" pada editor multi-halaman),
+  /// alih-alih push ke ScanResultScreen.
+  final bool returnArtifact;
 
   @override
   State<ProcessingScreen> createState() => _ProcessingScreenState();
@@ -78,14 +87,19 @@ class _ProcessingScreenState extends State<ProcessingScreen> {
               },
             );
           }
-          // Sukses → tunda 1 frame lalu pindah ke result screen.
+          // Sukses → tunda 1 frame lalu pindah ke result screen (atau pop
+          // dengan artifact bila dipanggil sebagai "tambah/foto ulang halaman").
           WidgetsBinding.instance.addPostFrameCallback((_) {
             if (!mounted) return;
-            Navigator.of(context).pushReplacement(
-              MaterialPageRoute<void>(
-                builder: (_) => ScanResultScreen(artifact: snap.data!),
-              ),
-            );
+            if (widget.returnArtifact) {
+              Navigator.of(context).pop<ScanArtifact>(snap.data!);
+            } else {
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute<void>(
+                  builder: (_) => ScanResultScreen(artifact: snap.data!),
+                ),
+              );
+            }
           });
           return const _ProcessingState();
         },

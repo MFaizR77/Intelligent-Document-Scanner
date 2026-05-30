@@ -1,8 +1,12 @@
 // lib/views/processing/scan_result_screen.dart
 //
-// Layar hasil scan: tampilkan before/after slider, action bar (OCR, save,
-// export PDF, share). OCR dipanggil on-demand pada gambar enhanced (PCD murni
-// di hulu, ML hanya post-processor).
+// Editor hasil scan multi-halaman (ala CamScanner):
+//   - strip thumbnail halaman: pilih, hapus, reorder (drag), foto ulang
+//   - tambah halaman (kamera PCD / ML Kit / galeri) → pipeline yang sama
+//   - before/after slider + ganti mode enhancement per halaman aktif
+//   - simpan ke Riwayat (dengan nama dokumen) → 1 ScanResult multi-halaman
+//   - export PDF multi-halaman + share
+//   - OCR (halaman pertama saja) — PCD murni di hulu, ML hanya post-processor
 
 import 'dart:io';
 
@@ -11,15 +15,21 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/config/pcd_params.dart';
+import 'package:tugasbesar_pcd/controllers/document_session.dart';
+import 'package:tugasbesar_pcd/models/capture_payload.dart';
 import 'package:tugasbesar_pcd/models/scan_artifact.dart';
 import 'package:tugasbesar_pcd/models/scan_engine.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
 import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
 import 'package:tugasbesar_pcd/services/ocr/text_recognition_service.dart';
+import 'package:tugasbesar_pcd/services/scanner/mlkit_document_scanner_service.dart';
 import 'package:tugasbesar_pcd/services/storage/file_service.dart';
 import 'package:tugasbesar_pcd/services/storage/pdf_export_service.dart';
 import 'package:tugasbesar_pcd/services/storage/scan_repository.dart';
+import 'package:tugasbesar_pcd/views/processing/processing_screen.dart';
+import 'package:tugasbesar_pcd/views/scanner/picker_entry.dart';
+import 'package:tugasbesar_pcd/views/scanner/scanner_screen.dart';
 import 'package:tugasbesar_pcd/widgets/common/app_components.dart';
 import 'package:tugasbesar_pcd/widgets/document/before_after_slider.dart';
 
@@ -33,20 +43,38 @@ class ScanResultScreen extends StatefulWidget {
 }
 
 class _ScanResultScreenState extends State<ScanResultScreen> {
-  late ScanArtifact _artifact;
-  late EnhancementMode _mode;
+  late final DocumentSession _session;
+  EnhancementMode _mode = EnhancementMode.color;
   ScanResult? _saved;
   bool _saving = false;
   bool _ocrLoading = false;
   bool _switchingMode = false;
-  String? _exportedPdfPath;
+  bool _addingPage = false;
 
   @override
   void initState() {
     super.initState();
-    _artifact = widget.artifact;
+    _session = DocumentSession(widget.artifact);
     _mode = _modeFromLabel(widget.artifact.enhancementMode);
+    _session.addListener(_onSession);
   }
+
+  @override
+  void dispose() {
+    _session.removeListener(_onSession);
+    _session.dispose();
+    super.dispose();
+  }
+
+  void _onSession() {
+    if (!mounted) return;
+    // Sinkronkan mode chip dengan halaman aktif & invalidasi status simpan.
+    setState(() {
+      _mode = _modeFromLabel(_session.active.enhancementMode);
+    });
+  }
+
+  ScanArtifact get _artifact => _session.active;
 
   EnhancementMode _modeFromLabel(String label) {
     for (final m in EnhancementMode.values) {
@@ -55,34 +83,32 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     return EnhancementMode.color;
   }
 
-  /// Re-run enhancement saja (deteksi & warp memakai 4 sudut yang sudah
-  /// tersimpan di artifact saat ini), lalu update path enhanced.
+  /// Re-run enhancement pada halaman aktif (warp pakai 4 sudut tersimpan).
   Future<void> _switchMode(EnhancementMode mode) async {
     if (_switchingMode || mode == _mode) return;
     setState(() => _switchingMode = true);
 
-    final oldEnhancedPath = _artifact.enhancedPath;
+    final current = _session.active;
+    final oldEnhancedPath = current.enhancedPath;
     try {
       final newPath = await FileService.newEnhancedJpegPath();
-      final profile =
-          PcdParams.profileForLabel(_artifact.documentPlanLabel);
+      final profile = PcdParams.profileForLabel(current.documentPlanLabel);
       final updated = await DocumentPipeline.runFromFile(
-        inputPath: _artifact.originalPath,
+        inputPath: current.originalPath,
         outputPath: newPath,
         profile: profile,
         mode: mode,
-        overrideCorners: _artifact.cornersImage,
-        skipGeometry: _artifact.engine.skipGeometry,
-        engine: _artifact.engine,
+        overrideCorners: current.cornersImage,
+        skipGeometry: current.engine.skipGeometry,
+        engine: current.engine,
       );
       if (!mounted) return;
+      _session.replaceActive(updated);
       setState(() {
-        _artifact = updated;
         _mode = mode;
-        // Reset state save: hasil baru belum tersimpan ke Hive.
-        _saved = null;
+        _saved = null; // hasil baru belum tersimpan.
       });
-      // Best-effort hapus file mode lama supaya tidak menumpuk.
+      // Best-effort hapus file mode lama.
       try {
         final oldFile = File(oldEnhancedPath);
         if (await oldFile.exists()) await oldFile.delete();
@@ -97,11 +123,148 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     }
   }
 
+  // ---------------- Multi-page: tambah / foto ulang halaman ----------------
+
+  /// Pilih sumber halaman baru (Kamera PCD / ML Kit / Galeri) → CapturePayload.
+  Future<CapturePayload?> _pickNewPagePayload() async {
+    final plan = _session.active.documentPlanLabel;
+    final source = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(22)),
+      ),
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 44,
+              height: 5,
+              decoration: BoxDecoration(
+                color: Colors.white24,
+                borderRadius: BorderRadius.circular(99),
+              ),
+            ),
+            const SizedBox(height: 8),
+            ListTile(
+              leading: const Icon(Icons.camera_alt_rounded,
+                  color: AppColors.primary),
+              title: const Text('Kamera (PCD)'),
+              onTap: () => Navigator.pop(ctx, 'pcd'),
+            ),
+            if (MlkitDocumentScannerService.isSupported)
+              ListTile(
+                leading: const Icon(Icons.document_scanner_rounded,
+                    color: AppColors.blue),
+                title: const Text('Kamera (ML Kit)'),
+                onTap: () => Navigator.pop(ctx, 'mlkit'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined,
+                  color: Colors.white70),
+              title: const Text('Galeri'),
+              onTap: () => Navigator.pop(ctx, 'gallery'),
+            ),
+            const SizedBox(height: 12),
+          ],
+        ),
+      ),
+    );
+    if (source == null || !mounted) return null;
+
+    switch (source) {
+      case 'gallery':
+        final payload =
+            await PickerEntry.pickPayloadFromGallery(documentPlan: plan);
+        return payload;
+      case 'mlkit':
+      case 'pcd':
+        // Buka scanner dalam mode "return payload".
+        return Navigator.of(context).push<CapturePayload>(
+          MaterialPageRoute<CapturePayload>(
+            builder: (_) => ScannerScreen(
+              isActive: true,
+              returnPayload: true,
+            ),
+          ),
+        );
+    }
+    return null;
+  }
+
+  /// Jalankan pipeline untuk [payload] dan kembalikan ScanArtifact.
+  Future<ScanArtifact?> _processPayload(CapturePayload payload) async {
+    return Navigator.of(context).push<ScanArtifact>(
+      MaterialPageRoute<ScanArtifact>(
+        builder: (_) => ProcessingScreen(
+          payload: payload,
+          returnArtifact: true,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _addPage() async {
+    if (_addingPage) return;
+    setState(() => _addingPage = true);
+    try {
+      final payload = await _pickNewPagePayload();
+      if (payload == null || !mounted) return;
+      final artifact = await _processPayload(payload);
+      if (artifact == null || !mounted) return;
+      _session.addPage(artifact);
+      setState(() => _saved = null);
+    } finally {
+      if (mounted) setState(() => _addingPage = false);
+    }
+  }
+
+  Future<void> _rephotoPage(int index) async {
+    if (_addingPage) return;
+    setState(() => _addingPage = true);
+    try {
+      final payload = await _pickNewPagePayload();
+      if (payload == null || !mounted) return;
+      final artifact = await _processPayload(payload);
+      if (artifact == null || !mounted) return;
+      _session.replaceAt(index, artifact);
+      setState(() => _saved = null);
+    } finally {
+      if (mounted) setState(() => _addingPage = false);
+    }
+  }
+
+  void _deletePage(int index) {
+    if (_session.pageCount <= 1) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Dokumen minimal punya 1 halaman')),
+      );
+      return;
+    }
+    _session.removeAt(index);
+    setState(() => _saved = null);
+  }
+
+  // ---------------- Simpan / Export / Share / OCR ----------------
+
   Future<void> _save() async {
     if (_saved != null || _saving) return;
+
+    final title = await _askDocumentName(
+      title: 'Simpan ke Riwayat',
+      initial: _defaultDocName(),
+    );
+    if (title == null) return; // batal
+
     setState(() => _saving = true);
     try {
-      final entry = await ScanRepository.instance.save(_artifact);
+      final entry = await ScanRepository.instance.save(
+        _session.active,
+        title: title,
+        pagePaths: _session.enhancedPaths,
+      );
       if (!mounted) return;
       setState(() => _saved = entry);
       ScaffoldMessenger.of(context).showSnackBar(
@@ -113,54 +276,22 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   }
 
   Future<void> _exportPdf() async {
-    final TextEditingController nameController = TextEditingController(
-      text: '${_artifact.documentPlanLabel}_${DateTime.now().millisecondsSinceEpoch}',
+    final finalName = await _askDocumentName(
+      title: 'Export PDF',
+      initial: _defaultDocName(),
     );
-
-    final customName = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppColors.surface,
-        title: const Text('Simpan PDF', style: TextStyle(color: Colors.white)),
-        content: TextField(
-          controller: nameController,
-          style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(
-            labelText: 'Nama File',
-            labelStyle: TextStyle(color: Colors.white70),
-            enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.white30)),
-            focusedBorder: UnderlineInputBorder(borderSide: BorderSide(color: AppColors.primary)),
-          ),
-          autofocus: true,
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Batal', style: TextStyle(color: Colors.white70)),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, nameController.text),
-            child: const Text('Simpan', style: TextStyle(color: AppColors.primary)),
-          ),
-        ],
-      ),
-    );
-
-    if (customName == null || customName.trim().isEmpty) return;
-    final finalName = customName.trim();
+    if (finalName == null) return;
 
     try {
       final path = await PdfExportService.instance.exportImages(
-        [_artifact.enhancedPath],
-        hint: _artifact.documentPlanLabel,
+        _session.enhancedPaths,
+        hint: _session.active.documentPlanLabel,
         exactName: finalName,
       );
       if (!mounted) return;
-      setState(() => _exportedPdfPath = path);
-
       await Share.shareXFiles(
         [XFile(path)],
-        text: 'Hasil scan $finalName',
+        text: 'Hasil scan $finalName (${_session.pageCount} halaman)',
       );
     } catch (e) {
       if (!mounted) return;
@@ -173,8 +304,8 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
   Future<void> _shareImage() async {
     try {
       await Share.shareXFiles(
-        [XFile(_artifact.enhancedPath)],
-        text: 'Scan ${_artifact.documentPlanLabel}',
+        _session.enhancedPaths.map((p) => XFile(p)).toList(),
+        text: 'Scan ${_session.active.documentPlanLabel}',
       );
     } catch (e) {
       if (!mounted) return;
@@ -184,12 +315,64 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
     }
   }
 
+  String _defaultDocName() =>
+      '${_session.active.documentPlanLabel}_${DateTime.now().millisecondsSinceEpoch}';
+
+  Future<String?> _askDocumentName({
+    required String title,
+    required String initial,
+  }) async {
+    final controller = TextEditingController(text: initial);
+    final result = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.surface,
+        title: Text(title, style: const TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white),
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'Nama Dokumen',
+            labelStyle: TextStyle(color: Colors.white70),
+            enabledBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: Colors.white30)),
+            focusedBorder: UnderlineInputBorder(
+                borderSide: BorderSide(color: AppColors.primary)),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Batal', style: TextStyle(color: Colors.white70)),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, controller.text),
+            child:
+                const Text('Simpan', style: TextStyle(color: AppColors.primary)),
+          ),
+        ],
+      ),
+    );
+    if (result == null) return null;
+    final trimmed = result.trim();
+    return trimmed.isEmpty ? null : trimmed;
+  }
+
   Future<void> _runOcr() async {
     if (_ocrLoading) return;
     setState(() => _ocrLoading = true);
     final svc = TextRecognitionService();
+    String? tempOcrPath;
     try {
-      final result = await svc.recognize(File(_artifact.enhancedPath));
+      // OCR halaman pertama. ML Kit OCR membaca paling akurat pada citra
+      // ber-kontras tinggi (teks hitam, latar putih). Mode tampilan bisa saja
+      // Color/Magic yang kurang optimal untuk OCR, jadi kita siapkan versi
+      // B&W khusus dari halaman pertama hanya untuk OCR.
+      final first = _session.pages.first;
+      tempOcrPath = await _buildOcrOptimizedImage(first);
+      final target = tempOcrPath ?? first.enhancedPath;
+      final result = await svc.recognize(File(target));
       if (!mounted) return;
       _showOcrSheet(result);
     } catch (e) {
@@ -199,7 +382,38 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       );
     } finally {
       await svc.dispose();
+      // Bersihkan file OCR sementara.
+      if (tempOcrPath != null) {
+        try {
+          final f = File(tempOcrPath);
+          if (await f.exists()) await f.delete();
+        } catch (_) {}
+      }
       if (mounted) setState(() => _ocrLoading = false);
+    }
+  }
+
+  /// Bangun citra B&W (binarized) dari [page] khusus untuk OCR. Re-run pipeline
+  /// dengan mode B&W pada gambar asli halaman tsb. Mengembalikan path file
+  /// sementara, atau null kalau gagal (caller fallback ke gambar enhanced).
+  Future<String?> _buildOcrOptimizedImage(ScanArtifact page) async {
+    try {
+      // Kalau mode aktif sudah B&W, gambar enhanced sudah optimal untuk OCR.
+      if (page.enhancementMode == EnhancementMode.bw.label) return null;
+      final outPath = await FileService.newEnhancedJpegPath();
+      final profile = PcdParams.profileForLabel(page.documentPlanLabel);
+      final artifact = await DocumentPipeline.runFromFile(
+        inputPath: page.originalPath,
+        outputPath: outPath,
+        profile: profile,
+        mode: EnhancementMode.bw,
+        overrideCorners: page.cornersImage,
+        skipGeometry: page.engine.skipGeometry,
+        engine: page.engine,
+      );
+      return artifact.enhancedPath;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -238,7 +452,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                     children: [
                       const Expanded(
                         child: Text(
-                          'Hasil OCR',
+                          'Hasil OCR (halaman 1)',
                           style: TextStyle(
                             fontSize: 18,
                             fontWeight: FontWeight.w900,
@@ -323,15 +537,17 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.background,
         centerTitle: true,
-        title: const Text(
-          'Hasil Scan',
-          style: TextStyle(fontWeight: FontWeight.w900),
+        title: Text(
+          _session.isMultiPage
+              ? 'Hasil Scan · ${_session.pageCount} halaman'
+              : 'Hasil Scan',
+          style: const TextStyle(fontWeight: FontWeight.w900),
         ),
       ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
         children: [
-          // Before / After
+          // Before / After (halaman aktif)
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -348,8 +564,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                       fit: StackFit.expand,
                       children: [
                         BeforeAfterSlider(
-                          // Key dengan path memastikan widget rebuild penuh
-                          // saat enhancedPath berganti (mode di-switch).
                           key: ValueKey(a.enhancedPath),
                           beforePath: a.originalPath,
                           afterPath: a.enhancedPath,
@@ -383,10 +597,6 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                       label: 'Sharp',
                       value: a.blurScore.toStringAsFixed(0),
                     ),
-                    _Metric(
-                      label: 'Pipeline',
-                      value: '${a.totalDuration.inMilliseconds} ms',
-                    ),
                   ],
                 ),
               ],
@@ -394,7 +604,22 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
           ),
           const SizedBox(height: 16),
 
-          // Mode selector (4 mode dari EnhancementService).
+          // Strip halaman (thumbnail + reorder + add).
+          _PageStrip(
+            session: _session,
+            busy: _addingPage,
+            onSelect: _session.setActive,
+            onAdd: _addPage,
+            onDelete: _deletePage,
+            onRephoto: _rephotoPage,
+            onReorder: (oldI, newI) {
+              _session.reorder(oldI, newI);
+              setState(() => _saved = null);
+            },
+          ),
+          const SizedBox(height: 16),
+
+          // Mode enhancement (halaman aktif).
           _ModeSelector(
             current: _mode,
             disabled: _switchingMode,
@@ -433,9 +658,7 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
                   label: _saving
                       ? 'Menyimpan...'
                       : (_saved != null ? 'Tersimpan' : 'Simpan'),
-                  icon: _saved != null
-                      ? Icons.check
-                      : Icons.save_outlined,
+                  icon: _saved != null ? Icons.check : Icons.save_outlined,
                   backgroundColor: _saved != null
                       ? AppColors.primary.withValues(alpha: 0.18)
                       : AppColors.surface,
@@ -446,14 +669,274 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
               ),
             ],
           ),
-          if (_exportedPdfPath != null) ...[
-            const SizedBox(height: 10),
-            Text(
-              'PDF: $_exportedPdfPath',
-              style: const TextStyle(color: Colors.white38, fontSize: 11),
+        ],
+      ),
+    );
+  }
+}
+
+class _PageStrip extends StatelessWidget {
+  const _PageStrip({
+    required this.session,
+    required this.busy,
+    required this.onSelect,
+    required this.onAdd,
+    required this.onDelete,
+    required this.onRephoto,
+    required this.onReorder,
+  });
+
+  final DocumentSession session;
+  final bool busy;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onAdd;
+  final ValueChanged<int> onDelete;
+  final ValueChanged<int> onRephoto;
+  final void Function(int oldIndex, int newIndex) onReorder;
+
+  @override
+  Widget build(BuildContext context) {
+    final pages = session.pages;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 10),
+            child: Row(
+              children: [
+                Text(
+                  'Halaman (${pages.length})',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.78),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const Spacer(),
+                if (busy)
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.primary,
+                    ),
+                  )
+                else
+                  Text(
+                    'tahan & geser untuk urutkan',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.35),
+                      fontSize: 10,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          SizedBox(
+            height: 132,
+            child: ReorderableListView.builder(
+              scrollDirection: Axis.horizontal,
+              buildDefaultDragHandles: true,
+              padding: const EdgeInsets.symmetric(horizontal: 2),
+              itemCount: pages.length,
+              onReorder: onReorder,
+              footer: Padding(
+                key: const ValueKey('add_page_btn'),
+                padding: const EdgeInsets.only(left: 8),
+                child: _AddPageButton(onTap: busy ? null : onAdd),
+              ),
+              itemBuilder: (context, i) {
+                final page = pages[i];
+                final active = i == session.activeIndex;
+                return Padding(
+                  key: ValueKey(page.enhancedPath),
+                  padding: const EdgeInsets.only(right: 8),
+                  child: _PageThumb(
+                    index: i,
+                    path: page.enhancedPath,
+                    active: active,
+                    onTap: () => onSelect(i),
+                    onDelete: () => onDelete(i),
+                    onRephoto: () => onRephoto(i),
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PageThumb extends StatelessWidget {
+  const _PageThumb({
+    required this.index,
+    required this.path,
+    required this.active,
+    required this.onTap,
+    required this.onDelete,
+    required this.onRephoto,
+  });
+
+  final int index;
+  final String path;
+  final bool active;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  final VoidCallback onRephoto;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 96,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        decoration: BoxDecoration(
+                          border: Border.all(
+                            color: active ? AppColors.primary : AppColors.border,
+                            width: active ? 2 : 1,
+                          ),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Image.file(
+                          File(path),
+                          fit: BoxFit.cover,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Nomor halaman.
+                  Positioned(
+                    left: 4,
+                    top: 4,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: Colors.black.withValues(alpha: 0.6),
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '${index + 1}',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Menu (foto ulang / hapus).
+                  Positioned(
+                    right: 0,
+                    top: 0,
+                    child: PopupMenuButton<String>(
+                      iconSize: 18,
+                      padding: EdgeInsets.zero,
+                      color: AppColors.elevated,
+                      icon: Container(
+                        decoration: BoxDecoration(
+                          color: Colors.black.withValues(alpha: 0.6),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        padding: const EdgeInsets.all(2),
+                        child: const Icon(Icons.more_vert,
+                            color: Colors.white, size: 16),
+                      ),
+                      onSelected: (v) {
+                        if (v == 'rephoto') onRephoto();
+                        if (v == 'delete') onDelete();
+                      },
+                      itemBuilder: (_) => const [
+                        PopupMenuItem(
+                          value: 'rephoto',
+                          child: Row(
+                            children: [
+                              Icon(Icons.refresh, size: 18, color: Colors.white70),
+                              SizedBox(width: 8),
+                              Text('Foto ulang'),
+                            ],
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Row(
+                            children: [
+                              Icon(Icons.delete_outline,
+                                  size: 18, color: AppColors.danger),
+                              SizedBox(width: 8),
+                              Text('Hapus'),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
-        ],
+        ),
+      ),
+    );
+  }
+}
+
+class _AddPageButton extends StatelessWidget {
+  const _AddPageButton({required this.onTap});
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        width: 96,
+        decoration: BoxDecoration(
+          color: AppColors.elevated,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: AppColors.primary.withValues(alpha: 0.5),
+            width: 1.4,
+          ),
+        ),
+        child: const Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.add_a_photo_outlined, color: AppColors.primary),
+            SizedBox(height: 8),
+            Text(
+              'Tambah\nHalaman',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: AppColors.primary,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -502,8 +985,6 @@ class _ModeSelector extends StatelessWidget {
   final ValueChanged<EnhancementMode> onSelect;
   final bool disabled;
 
-  // 4 mode dari EnhancementService — urutan match dengan order yang familiar
-  // di app sejenis (Color → BW → Grayscale → Magic).
   static const _items = <(EnhancementMode, String, IconData)>[
     (EnhancementMode.color, 'Color', Icons.palette_outlined),
     (EnhancementMode.bw, 'B&W', Icons.contrast),
@@ -544,8 +1025,6 @@ class _ModeSelector extends StatelessWidget {
               ],
             ),
           ),
-          // Horizontal scroll: hindari layout sempit kalau nanti ada mode
-          // tambahan, dan kasih tap target yang lebih lega per chip.
           SizedBox(
             height: 78,
             child: ListView.separated(
@@ -553,7 +1032,7 @@ class _ModeSelector extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 4),
               physics: const BouncingScrollPhysics(),
               itemCount: _items.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 10),
+              separatorBuilder: (_, index) => const SizedBox(width: 10),
               itemBuilder: (_, i) {
                 final item = _items[i];
                 return _ModeChip(

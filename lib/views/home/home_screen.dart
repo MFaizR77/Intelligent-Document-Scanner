@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
+import 'package:tugasbesar_pcd/services/storage/user_prefs.dart';
+import 'package:tugasbesar_pcd/utils/greeting.dart';
 
 class HomeScreen extends StatelessWidget {
   const HomeScreen({
@@ -61,43 +63,49 @@ class HomeScreen extends StatelessWidget {
   }
 
   Widget _buildHeader() {
+    final greeting = greetingNow();
+    final name = UserPrefs.userName ?? 'Pengguna';
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Selamat pagi,',
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.7),
-                fontSize: 14,
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$greeting,',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 14,
+                ),
               ),
-            ),
-            const SizedBox(height: 4),
-            const Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: 'Faiz ',
-                    style: TextStyle(
-                      fontFamily: 'serif',
-                      fontWeight: FontWeight.bold,
-                      fontSize: 24,
-                      color: Colors.white,
+              const SizedBox(height: 4),
+              Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: '$name ',
+                      style: const TextStyle(
+                        fontFamily: 'serif',
+                        fontWeight: FontWeight.bold,
+                        fontSize: 24,
+                        color: Colors.white,
+                      ),
                     ),
-                  ),
-                  TextSpan(
-                    text: '✦',
-                    style: TextStyle(
-                      fontSize: 20,
-                      color: Colors.white,
+                    const TextSpan(
+                      text: '✦',
+                      style: TextStyle(
+                        fontSize: 20,
+                        color: Colors.white,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ],
     );
