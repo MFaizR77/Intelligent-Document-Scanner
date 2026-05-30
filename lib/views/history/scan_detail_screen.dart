@@ -1,9 +1,10 @@
 // lib/views/history/scan_detail_screen.dart
 //
 // Detail + EDITOR untuk satu entry ScanResult dari Hive.
-// Mendukung: lihat semua halaman, edit nama dokumen, tambah halaman,
-// foto ulang halaman, hapus halaman, reorder, lalu simpan perubahan kembali
-// ke entry Hive yang sama. Plus OCR / export PDF / share / hapus dokumen.
+// Mendukung: lihat semua halaman, edit nama dokumen, GANTI MODE ENHANCEMENT
+// (image processing) per halaman, tambah halaman, foto ulang halaman, hapus
+// halaman, reorder, lalu simpan perubahan kembali ke entry Hive yang sama.
+// Plus OCR / export PDF / share / hapus dokumen.
 
 import 'dart:io';
 
@@ -12,6 +13,8 @@ import 'package:flutter/services.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:tugasbesar_pcd/config/app_colors.dart';
 import 'package:tugasbesar_pcd/config/pcd_params.dart';
+import 'package:tugasbesar_pcd/models/document_page.dart';
+import 'package:tugasbesar_pcd/models/scan_engine.dart';
 import 'package:tugasbesar_pcd/models/scan_result.dart';
 import 'package:tugasbesar_pcd/services/image_processing/document_pipeline.dart';
 import 'package:tugasbesar_pcd/services/image_processing/enhancement.dart';
@@ -34,17 +37,60 @@ class ScanDetailScreen extends StatefulWidget {
 class _ScanDetailScreenState extends State<ScanDetailScreen> {
   bool _ocrLoading = false;
   bool _busy = false;
+  bool _switchingMode = false;
 
   /// Working copy halaman & nama. Perubahan baru ditulis ke Hive saat Simpan.
-  late List<String> _pages;
+  late List<DocumentPage> _pages;
   late String _title;
+  int _activeIndex = 0;
   bool _dirty = false;
 
   @override
   void initState() {
     super.initState();
-    _pages = List<String>.from(widget.result.pages);
+    _pages = _buildPages(widget.result);
     _title = widget.result.displayTitle;
+  }
+
+  /// Rekonstruksi [DocumentPage] dari ScanResult. Bila metadata per-halaman
+  /// lengkap → bisa rerun lossless dari raw. Bila data lama → fallback:
+  /// gambar enhanced dipakai sebagai sumber (reprocess di atas hasil enhance).
+  List<DocumentPage> _buildPages(ScanResult r) {
+    final enhanced = r.pages;
+    final hasMeta = r.hasEditableMeta;
+    return List.generate(enhanced.length, (i) {
+      final originals = r.originalPaths;
+      final corners = r.pageCorners;
+      final engines = r.pageEngines;
+      final modes = r.pageModes;
+      return DocumentPage(
+        enhancedPath: enhanced[i],
+        originalPath: (hasMeta && originals != null) ? originals[i] : enhanced[i],
+        corners: (corners != null && i < corners.length)
+            ? DocumentPage.cornersFromCsv(corners[i])
+            : const [],
+        engine: (engines != null && i < engines.length)
+            ? (engines[i] == 'mlkit' ? ScanEngine.mlkit : ScanEngine.pcd)
+            : ScanEngine.pcd,
+        mode: (modes != null && i < modes.length)
+            ? modes[i]
+            : EnhancementMode.color.label,
+      );
+    });
+  }
+
+  /// True kalau halaman [i] punya gambar raw terpisah (rerun lossless).
+  bool _isLossless(int i) =>
+      widget.result.hasEditableMeta &&
+      _pages[i].originalPath != _pages[i].enhancedPath;
+
+  DocumentPage get _active => _pages[_activeIndex];
+
+  EnhancementMode _modeFromLabel(String label) {
+    for (final m in EnhancementMode.values) {
+      if (m.label == label) return m;
+    }
+    return EnhancementMode.color;
   }
 
   String _formatDateTime(DateTime d) {
@@ -58,7 +104,54 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     return '${(bytes / 1024 / 1024).toStringAsFixed(1)} MB';
   }
 
-  // ---------------- Editing ----------------
+  // ---------------- Image processing (ganti mode enhancement) ----------------
+
+  Future<void> _switchMode(EnhancementMode mode) async {
+    if (_switchingMode) return;
+    final page = _active;
+    if (mode.label == page.mode) return;
+    setState(() => _switchingMode = true);
+
+    final oldEnhanced = page.enhancedPath;
+    final lossless = _isLossless(_activeIndex);
+    try {
+      final outPath = await FileService.newEnhancedJpegPath();
+      final profile = PcdParams.profileForLabel(widget.result.documentType);
+      final artifact = await DocumentPipeline.runFromFile(
+        inputPath: page.originalPath,
+        outputPath: outPath,
+        profile: profile,
+        mode: mode,
+        // Lossless: pakai corners asli + engine asli (warp ulang dari raw).
+        // Fallback: sumber = gambar enhanced yang sudah lurus → skip geometri.
+        overrideCorners: lossless && page.corners.length == 4
+            ? page.corners
+            : null,
+        skipGeometry: lossless ? page.engine.skipGeometry : true,
+        engine: page.engine,
+      );
+      if (!mounted) return;
+      setState(() {
+        _pages[_activeIndex].enhancedPath = artifact.enhancedPath;
+        _pages[_activeIndex].mode = mode.label;
+        _dirty = true;
+      });
+      // Hapus file enhanced lama — TAPI jangan hapus kalau itu juga sumber
+      // (kasus fallback data lama: originalPath == enhanced lama).
+      if (oldEnhanced != page.originalPath) {
+        _deleteFile(oldEnhanced);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Gagal ganti mode: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _switchingMode = false);
+    }
+  }
+
+  // ---------------- Editing nama / halaman ----------------
 
   Future<void> _editName() async {
     final controller = TextEditingController(text: _title);
@@ -111,7 +204,8 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
       );
       if (artifact == null || !mounted) return;
       setState(() {
-        _pages.add(artifact.enhancedPath);
+        _pages.add(DocumentPage.fromArtifact(artifact));
+        _activeIndex = _pages.length - 1;
         _dirty = true;
       });
     } finally {
@@ -128,14 +222,17 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
         documentPlan: widget.result.documentType,
       );
       if (artifact == null || !mounted) return;
-      final old = _pages[index];
+      final old = _pages[index].enhancedPath;
+      final oldOriginal = _pages[index].originalPath;
       setState(() {
-        _pages[index] = artifact.enhancedPath;
+        _pages[index] = DocumentPage.fromArtifact(artifact);
         _dirty = true;
       });
-      // Best-effort hapus file lama (kalau bukan dipakai halaman lain).
-      if (!_pages.contains(old)) {
-        _deleteFile(old);
+      // Hapus file lama (enhanced & raw lama) bila tak dipakai halaman lain.
+      if (!_pages.any((p) => p.enhancedPath == old)) _deleteFile(old);
+      if (oldOriginal != old &&
+          !_pages.any((p) => p.originalPath == oldOriginal)) {
+        _deleteFile(oldOriginal);
       }
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -152,10 +249,11 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     final removed = _pages[index];
     setState(() {
       _pages.removeAt(index);
+      if (_activeIndex >= _pages.length) _activeIndex = _pages.length - 1;
       _dirty = true;
     });
-    if (!_pages.contains(removed)) {
-      _deleteFile(removed);
+    if (!_pages.any((p) => p.enhancedPath == removed.enhancedPath)) {
+      _deleteFile(removed.enhancedPath);
     }
   }
 
@@ -165,6 +263,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     setState(() {
       final moved = _pages.removeAt(oldIndex);
       _pages.insert(target, moved);
+      _activeIndex = target;
       _dirty = true;
     });
   }
@@ -173,10 +272,10 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     if (!_dirty || _busy) return;
     setState(() => _busy = true);
     try {
-      await ScanRepository.instance.update(
+      await ScanRepository.instance.updatePages(
         widget.result,
+        pages: _pages,
         title: _title,
-        pagePaths: _pages,
       );
       if (!mounted) return;
       setState(() => _dirty = false);
@@ -195,7 +294,6 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     } catch (_) {}
   }
 
-  /// Cegah keluar dengan perubahan belum tersimpan.
   Future<bool> _confirmLeave() async {
     if (!_dirty) return true;
     final action = await showDialog<String>(
@@ -216,7 +314,8 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, 'save'),
-            child: const Text('Simpan', style: TextStyle(color: AppColors.primary)),
+            child:
+                const Text('Simpan', style: TextStyle(color: AppColors.primary)),
           ),
         ],
       ),
@@ -236,10 +335,9 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     final svc = TextRecognitionService();
     String? tempOcrPath;
     try {
-      // OCR halaman pertama. ML Kit OCR lebih akurat pada citra B&W kontras
-      // tinggi, jadi siapkan versi B&W sementara dari halaman pertama.
-      tempOcrPath = await _buildOcrOptimizedImage(_pages.first);
-      final target = tempOcrPath ?? _pages.first;
+      final firstPage = _pages.first;
+      tempOcrPath = await _buildOcrOptimizedImage(firstPage);
+      final target = tempOcrPath ?? firstPage.enhancedPath;
       final result = await svc.recognize(File(target));
       if (!mounted) return;
       _showOcrSheet(result);
@@ -255,15 +353,14 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     }
   }
 
-  /// Bangun citra B&W (binarized) khusus OCR dari [pagePath]. Re-run pipeline
-  /// dengan skipGeometry (gambar sudah lurus) + mode B&W. Return path file
-  /// sementara, atau null kalau gagal (caller fallback ke gambar asli).
-  Future<String?> _buildOcrOptimizedImage(String pagePath) async {
+  /// Citra B&W khusus OCR dari halaman pertama (sumber enhanced sudah lurus).
+  Future<String?> _buildOcrOptimizedImage(DocumentPage page) async {
     try {
+      if (page.mode == EnhancementMode.bw.label) return null;
       final outPath = await FileService.newEnhancedJpegPath();
       final profile = PcdParams.profileForLabel(widget.result.documentType);
       final artifact = await DocumentPipeline.runFromFile(
-        inputPath: pagePath,
+        inputPath: page.enhancedPath,
         outputPath: outPath,
         profile: profile,
         mode: EnhancementMode.bw,
@@ -369,7 +466,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
 
     try {
       final path = await PdfExportService.instance.exportImages(
-        _pages,
+        _pages.map((p) => p.enhancedPath).toList(),
         hint: widget.result.documentType,
         exactName: finalName,
       );
@@ -405,7 +502,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     );
     if (ok != true) return;
     for (final p in _pages) {
-      _deleteFile(p);
+      _deleteFile(p.enhancedPath);
     }
     await ScanRepository.instance.delete(widget.result);
     if (!mounted) return;
@@ -418,10 +515,12 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
     int size = 0;
     try {
       for (final p in _pages) {
-        final f = File(p);
+        final f = File(p.enhancedPath);
         if (f.existsSync()) size += f.lengthSync();
       }
     } catch (_) {}
+
+    final activeMode = _modeFromLabel(_active.mode);
 
     return PopScope(
       canPop: !_dirty,
@@ -457,12 +556,44 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
           children: [
             AspectRatio(
               aspectRatio: 3 / 4,
-              child: _PageViewer(pages: _pages),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _PageViewer(
+                    key: ValueKey(_pages.map((p) => p.enhancedPath).join('|')),
+                    pages: _pages.map((p) => p.enhancedPath).toList(),
+                    initialIndex: _activeIndex,
+                    onPageChanged: (i) => setState(() => _activeIndex = i),
+                  ),
+                  if (_switchingMode)
+                    const Positioned.fill(
+                      child: ColoredBox(
+                        color: Colors.black54,
+                        child: Center(
+                          child: CircularProgressIndicator(
+                            color: AppColors.primary,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
             const SizedBox(height: 16),
+
+            // Image processing: ganti mode enhancement untuk halaman aktif.
+            _ModeSelector(
+              current: activeMode,
+              disabled: _switchingMode || _busy,
+              onSelect: _switchMode,
+            ),
+            const SizedBox(height: 16),
+
             _PageEditorStrip(
-              pages: _pages,
+              pages: _pages.map((p) => p.enhancedPath).toList(),
+              activeIndex: _activeIndex,
               busy: _busy,
+              onSelect: (i) => setState(() => _activeIndex = i),
               onAdd: _addPage,
               onDelete: _deletePage,
               onRephoto: _rephotoPage,
@@ -471,6 +602,7 @@ class _ScanDetailScreenState extends State<ScanDetailScreen> {
             const SizedBox(height: 18),
             _MetaRow(label: 'Nama dokumen', value: _title),
             _MetaRow(label: 'Tipe dokumen', value: r.documentType),
+            _MetaRow(label: 'Mode halaman aktif', value: _active.mode),
             if (_pages.length > 1)
               _MetaRow(label: 'Jumlah halaman', value: '${_pages.length}'),
             _MetaRow(label: 'Tanggal scan', value: _formatDateTime(r.scanDate)),
@@ -559,12 +691,142 @@ class _MetaRow extends StatelessWidget {
   }
 }
 
-/// Strip thumbnail halaman untuk editor dokumen tersimpan: pilih (lihat),
-/// reorder (drag), foto ulang, hapus, dan tambah halaman.
+/// Selektor mode enhancement (image processing) — sama seperti di hasil scan.
+class _ModeSelector extends StatelessWidget {
+  const _ModeSelector({
+    required this.current,
+    required this.onSelect,
+    required this.disabled,
+  });
+
+  final EnhancementMode current;
+  final ValueChanged<EnhancementMode> onSelect;
+  final bool disabled;
+
+  static const _items = <(EnhancementMode, String, IconData)>[
+    (EnhancementMode.color, 'Color', Icons.palette_outlined),
+    (EnhancementMode.bw, 'B&W', Icons.contrast),
+    (EnhancementMode.grayscale, 'Grayscale', Icons.filter_b_and_w),
+    (EnhancementMode.magic, 'Magic', Icons.auto_awesome),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(12, 12, 12, 14),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(left: 4, bottom: 10),
+            child: Text(
+              'Mode Enhancement (Image Processing)',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.78),
+                fontSize: 12,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.0,
+              ),
+            ),
+          ),
+          SizedBox(
+            height: 78,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              physics: const BouncingScrollPhysics(),
+              itemCount: _items.length,
+              separatorBuilder: (_, index) => const SizedBox(width: 10),
+              itemBuilder: (_, i) {
+                final item = _items[i];
+                return _ModeChip(
+                  label: item.$2,
+                  icon: item.$3,
+                  active: current == item.$1,
+                  disabled: disabled,
+                  onTap: () => onSelect(item.$1),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ModeChip extends StatelessWidget {
+  const _ModeChip({
+    required this.label,
+    required this.icon,
+    required this.active,
+    required this.disabled,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool active;
+  final bool disabled;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tint = active ? AppColors.primary : Colors.white60;
+    return InkWell(
+      onTap: disabled ? null : onTap,
+      borderRadius: BorderRadius.circular(14),
+      child: Opacity(
+        opacity: disabled && !active ? 0.5 : 1.0,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 160),
+          width: 86,
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          decoration: BoxDecoration(
+            color: active
+                ? AppColors.primary.withValues(alpha: 0.16)
+                : AppColors.elevated,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: active ? AppColors.primary : AppColors.border,
+              width: active ? 1.4 : 1,
+            ),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, color: tint, size: 22),
+              const SizedBox(height: 6),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: tint,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Strip thumbnail halaman untuk editor: pilih (lihat), reorder (drag),
+/// foto ulang, hapus, dan tambah halaman.
 class _PageEditorStrip extends StatelessWidget {
   const _PageEditorStrip({
     required this.pages,
+    required this.activeIndex,
     required this.busy,
+    required this.onSelect,
     required this.onAdd,
     required this.onDelete,
     required this.onRephoto,
@@ -572,7 +834,9 @@ class _PageEditorStrip extends StatelessWidget {
   });
 
   final List<String> pages;
+  final int activeIndex;
   final bool busy;
+  final ValueChanged<int> onSelect;
   final VoidCallback onAdd;
   final ValueChanged<int> onDelete;
   final ValueChanged<int> onRephoto;
@@ -643,6 +907,8 @@ class _PageEditorStrip extends StatelessWidget {
                   child: _PageThumb(
                     index: i,
                     path: pages[i],
+                    active: i == activeIndex,
+                    onTap: () => onSelect(i),
                     onDelete: () => onDelete(i),
                     onRephoto: () => onRephoto(i),
                   ),
@@ -660,105 +926,117 @@ class _PageThumb extends StatelessWidget {
   const _PageThumb({
     required this.index,
     required this.path,
+    required this.active,
+    required this.onTap,
     required this.onDelete,
     required this.onRephoto,
   });
 
   final int index;
   final String path;
+  final bool active;
+  final VoidCallback onTap;
   final VoidCallback onDelete;
   final VoidCallback onRephoto;
 
   @override
   Widget build(BuildContext context) {
     final file = File(path);
-    return SizedBox(
-      width: 96,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: ClipRRect(
-              borderRadius: BorderRadius.circular(10),
-              child: Container(
-                decoration: BoxDecoration(
-                  border: Border.all(color: AppColors.border),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: file.existsSync()
-                    ? Image.file(file, fit: BoxFit.cover, gaplessPlayback: true)
-                    : const ColoredBox(
-                        color: AppColors.elevated,
-                        child: Center(
-                          child: Icon(Icons.broken_image, color: Colors.white24),
+    return GestureDetector(
+      onTap: onTap,
+      child: SizedBox(
+        width: 96,
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: active ? AppColors.primary : AppColors.border,
+                      width: active ? 2 : 1,
+                    ),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: file.existsSync()
+                      ? Image.file(file, fit: BoxFit.cover, gaplessPlayback: true)
+                      : const ColoredBox(
+                          color: AppColors.elevated,
+                          child: Center(
+                            child:
+                                Icon(Icons.broken_image, color: Colors.white24),
+                          ),
                         ),
-                      ),
-              ),
-            ),
-          ),
-          Positioned(
-            left: 4,
-            top: 4,
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.6),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: Text(
-                '${index + 1}',
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 11,
-                  fontWeight: FontWeight.w900,
                 ),
               ),
             ),
-          ),
-          Positioned(
-            right: 0,
-            top: 0,
-            child: PopupMenuButton<String>(
-              iconSize: 18,
-              padding: EdgeInsets.zero,
-              color: AppColors.elevated,
-              icon: Container(
+            Positioned(
+              left: 4,
+              top: 4,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                 decoration: BoxDecoration(
                   color: Colors.black.withValues(alpha: 0.6),
                   borderRadius: BorderRadius.circular(6),
                 ),
-                padding: const EdgeInsets.all(2),
-                child: const Icon(Icons.more_vert, color: Colors.white, size: 16),
+                child: Text(
+                  '${index + 1}',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
               ),
-              onSelected: (v) {
-                if (v == 'rephoto') onRephoto();
-                if (v == 'delete') onDelete();
-              },
-              itemBuilder: (_) => const [
-                PopupMenuItem(
-                  value: 'rephoto',
-                  child: Row(
-                    children: [
-                      Icon(Icons.refresh, size: 18, color: Colors.white70),
-                      SizedBox(width: 8),
-                      Text('Foto ulang'),
-                    ],
-                  ),
-                ),
-                PopupMenuItem(
-                  value: 'delete',
-                  child: Row(
-                    children: [
-                      Icon(Icons.delete_outline,
-                          size: 18, color: AppColors.danger),
-                      SizedBox(width: 8),
-                      Text('Hapus'),
-                    ],
-                  ),
-                ),
-              ],
             ),
-          ),
-        ],
+            Positioned(
+              right: 0,
+              top: 0,
+              child: PopupMenuButton<String>(
+                iconSize: 18,
+                padding: EdgeInsets.zero,
+                color: AppColors.elevated,
+                icon: Container(
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.6),
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  padding: const EdgeInsets.all(2),
+                  child:
+                      const Icon(Icons.more_vert, color: Colors.white, size: 16),
+                ),
+                onSelected: (v) {
+                  if (v == 'rephoto') onRephoto();
+                  if (v == 'delete') onDelete();
+                },
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: 'rephoto',
+                    child: Row(
+                      children: [
+                        Icon(Icons.refresh, size: 18, color: Colors.white70),
+                        SizedBox(width: 8),
+                        Text('Foto ulang'),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: 'delete',
+                    child: Row(
+                      children: [
+                        Icon(Icons.delete_outline,
+                            size: 18, color: AppColors.danger),
+                        SizedBox(width: 8),
+                        Text('Hapus'),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -807,17 +1085,31 @@ class _AddPageButton extends StatelessWidget {
 /// Penampil halaman dokumen. Single-page → satu gambar; multi-page → PageView
 /// horizontal dengan indikator halaman.
 class _PageViewer extends StatefulWidget {
-  const _PageViewer({required this.pages});
+  const _PageViewer({
+    super.key,
+    required this.pages,
+    this.initialIndex = 0,
+    this.onPageChanged,
+  });
 
   final List<String> pages;
+  final int initialIndex;
+  final ValueChanged<int>? onPageChanged;
 
   @override
   State<_PageViewer> createState() => _PageViewerState();
 }
 
 class _PageViewerState extends State<_PageViewer> {
-  final PageController _controller = PageController();
-  int _index = 0;
+  late final PageController _controller;
+  late int _index;
+
+  @override
+  void initState() {
+    super.initState();
+    _index = widget.initialIndex.clamp(0, widget.pages.length - 1);
+    _controller = PageController(initialPage: _index);
+  }
 
   @override
   void dispose() {
@@ -845,16 +1137,16 @@ class _PageViewerState extends State<_PageViewer> {
     if (widget.pages.length == 1) {
       return SizedBox.expand(child: _buildImage(widget.pages.first));
     }
-    // Clamp index kalau jumlah halaman berubah (mis. setelah hapus).
-    final pageCount = widget.pages.length;
-    if (_index >= pageCount) _index = pageCount - 1;
     return Stack(
       children: [
         Positioned.fill(
           child: PageView.builder(
             controller: _controller,
-            itemCount: pageCount,
-            onPageChanged: (i) => setState(() => _index = i),
+            itemCount: widget.pages.length,
+            onPageChanged: (i) {
+              setState(() => _index = i);
+              widget.onPageChanged?.call(i);
+            },
             itemBuilder: (_, i) => _buildImage(widget.pages[i]),
           ),
         ),
@@ -868,7 +1160,7 @@ class _PageViewerState extends State<_PageViewer> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Text(
-              '${_index + 1}/$pageCount',
+              '${_index + 1}/${widget.pages.length}',
               style: const TextStyle(
                 color: Colors.white,
                 fontSize: 12,

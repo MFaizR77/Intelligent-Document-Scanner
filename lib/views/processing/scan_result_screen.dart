@@ -177,10 +177,11 @@ class _ScanResultScreenState extends State<ScanResultScreen> {
 
     setState(() => _saving = true);
     try {
-      final entry = await ScanRepository.instance.save(
-        _session.active,
+      final entry = await ScanRepository.instance.savePages(
+        pages: _session.toDocumentPages(),
+        documentType: _session.active.documentPlanLabel,
+        blurScore: _session.active.blurScore,
         title: title,
-        pagePaths: _session.enhancedPaths,
       );
       if (!mounted) return;
       setState(() => _saved = entry);

@@ -7,6 +7,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 
+import '../../models/document_page.dart';
 import '../../models/scan_artifact.dart';
 import '../../models/scan_result.dart';
 
@@ -17,6 +18,70 @@ class ScanRepository {
   static const String _boxName = 'scan_results';
 
   Box<ScanResult> get _box => Hive.box<ScanResult>(_boxName);
+
+  /// Simpan dokumen (multi-halaman) beserta metadata per-halaman supaya
+  /// image processing (ganti mode enhancement) bisa di-rerun dari sumber raw.
+  Future<ScanResult> savePages({
+    required List<DocumentPage> pages,
+    required String documentType,
+    required double blurScore,
+    String? title,
+  }) async {
+    final conf = (blurScore / 200).clamp(0.0, 1.0);
+    final entry = _buildEntry(
+      pages: pages,
+      scanDate: DateTime.now(),
+      documentType: documentType,
+      confidenceScore: conf,
+      title: title,
+    );
+    await _box.add(entry);
+    return entry;
+  }
+
+  /// Update entry tersimpan dengan daftar [DocumentPage] baru + nama.
+  Future<ScanResult> updatePages(
+    ScanResult old, {
+    required List<DocumentPage> pages,
+    String? title,
+  }) async {
+    final entry = _buildEntry(
+      pages: pages,
+      scanDate: old.scanDate,
+      documentType: old.documentType,
+      confidenceScore: old.confidenceScore,
+      title: (title != null && title.trim().isNotEmpty) ? title.trim() : old.title,
+    );
+    final key = old.key;
+    if (key != null) {
+      await _box.put(key, entry);
+    } else {
+      await _box.add(entry);
+    }
+    return entry;
+  }
+
+  ScanResult _buildEntry({
+    required List<DocumentPage> pages,
+    required DateTime scanDate,
+    required String documentType,
+    required double confidenceScore,
+    String? title,
+  }) {
+    final enhanced = pages.map((p) => p.enhancedPath).toList();
+    return ScanResult(
+      imagePath: enhanced.first,
+      scanDate: scanDate,
+      documentType: documentType,
+      confidenceScore: confidenceScore,
+      title: (title != null && title.trim().isNotEmpty) ? title.trim() : null,
+      pagePaths: enhanced,
+      originalPaths: pages.map((p) => p.originalPath).toList(),
+      pageCorners: pages.map((p) => p.cornersCsv).toList(),
+      pageEngines: pages.map((p) => p.engine.name).toList(),
+      pageModes: pages.map((p) => p.mode).toList(),
+    );
+  }
 
   /// Simpan hasil pipeline. Path yang disimpan adalah enhancedPath.
   /// [docType] biasanya diambil dari [ScanArtifact.documentPlanLabel].
@@ -69,6 +134,23 @@ class ScanRepository {
           ? title.trim()
           : old.title,
       pagePaths: pages,
+      // Pertahankan metadata lama bila panjangnya cocok dengan jumlah halaman.
+      originalPaths: (old.originalPaths != null &&
+              old.originalPaths!.length == pages.length)
+          ? old.originalPaths
+          : null,
+      pageCorners: (old.pageCorners != null &&
+              old.pageCorners!.length == pages.length)
+          ? old.pageCorners
+          : null,
+      pageEngines: (old.pageEngines != null &&
+              old.pageEngines!.length == pages.length)
+          ? old.pageEngines
+          : null,
+      pageModes:
+          (old.pageModes != null && old.pageModes!.length == pages.length)
+              ? old.pageModes
+              : null,
     );
     final key = old.key;
     if (key != null) {

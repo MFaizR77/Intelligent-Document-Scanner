@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 
+import '../models/document_page.dart';
 import '../models/scan_artifact.dart';
 
 class DocumentSession extends ChangeNotifier {
@@ -28,6 +29,10 @@ class DocumentSession extends ChangeNotifier {
   /// Path JPG enhanced semua halaman (untuk export PDF / simpan).
   List<String> get enhancedPaths =>
       _pages.map((p) => p.enhancedPath).toList(growable: false);
+
+  /// Konversi ke [DocumentPage] untuk disimpan dengan metadata lengkap.
+  List<DocumentPage> toDocumentPages() =>
+      _pages.map(DocumentPage.fromArtifact).toList();
 
   void setActive(int index) {
     if (index < 0 || index >= _pages.length || index == _activeIndex) return;
