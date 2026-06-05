@@ -37,20 +37,14 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Container(
-              padding: const EdgeInsets.all(24),
-              decoration: BoxDecoration(
-                color: const Color(0xFF34C759),
-                borderRadius: BorderRadius.circular(24),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF34C759).withValues(alpha: 0.3),
-                    blurRadius: 40,
-                    spreadRadius: 10,
-                  ),
-                ],
+            ClipRRect(
+              borderRadius: BorderRadius.circular(24),
+              child: Image.asset(
+                'assets/logo.png',
+                width: 96,
+                height: 96,
+                fit: BoxFit.cover,
               ),
-              child: const Icon(Icons.document_scanner, size: 48, color: Colors.white),
             ),
             const SizedBox(height: 24),
             const Text(
@@ -93,7 +87,7 @@ class _SplashScreenState extends State<SplashScreen> {
       width: 8,
       height: 8,
       decoration: BoxDecoration(
-        color: const Color(0xFF34C759).withValues(alpha: index == 0 ? 1.0 : 0.4),
+        color: const Color(0xFF34C759).withOpacity(index == 0 ? 1.0 : 0.4),
         shape: BoxShape.circle,
       ),
     );
