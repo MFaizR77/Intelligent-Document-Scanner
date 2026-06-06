@@ -107,8 +107,6 @@ class _CameraPlanScreenState extends State<CameraPlanScreen> {
             value: _autoCaptureEnabled,
             onChanged: (value) => setState(() => _autoCaptureEnabled = value),
           ),
-          const SizedBox(height: 12),
-          const _InfoCard(),
           const SizedBox(height: 28),
           AppPrimaryButton(label: 'Simpan Plan', onPressed: _save),
         ],
@@ -175,30 +173,3 @@ class _SwitchRow extends StatelessWidget {
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  const _InfoCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.blue.withValues(alpha: 0.10),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppColors.blue.withValues(alpha: 0.38)),
-      ),
-      child: const Row(
-        children: [
-          Icon(Icons.layers_outlined, color: AppColors.blue),
-          SizedBox(width: 12),
-          Expanded(
-            child: Text(
-              'Phase 1-2: kamera, isolate, Canny edge, contour dokumen, perspective/enhancement baseline. ML dan Mongo end-to-end belum diaktifkan.',
-              style: TextStyle(color: Colors.white70, height: 1.35),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}

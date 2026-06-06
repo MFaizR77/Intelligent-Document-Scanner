@@ -47,22 +47,44 @@ class ScannerControls extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              if (!isReady)
+              if (autoCaptureEnabled) ...[
+                if (!isReady)
+                  const Padding(
+                    padding: EdgeInsets.only(right: 6),
+                    child: Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 16),
+                  ),
+                Flexible(
+                  child: Text(
+                    isReady
+                        ? 'Tahan stabil · auto-capture dalam 1 detik'
+                        : 'Miringkan kamera untuk meluruskan dokumen',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: isReady ? Colors.white54 : AppColors.danger,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ] else ...[
                 const Padding(
                   padding: EdgeInsets.only(right: 6),
-                  child: Icon(Icons.warning_amber_rounded, color: AppColors.danger, size: 16),
+                  child: Icon(Icons.touch_app_outlined, color: AppColors.primary, size: 16),
                 ),
-              Text(
-                isReady
-                    ? 'Tahan stabil · auto-capture dalam 1 detik'
-                    : 'Miringkan kamera untuk meluruskan dokumen',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: isReady ? Colors.white54 : AppColors.danger,
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
+                Flexible(
+                  child: Text(
+                    isReady
+                        ? 'Dokumen terdeteksi · Ketuk shutter untuk memotret'
+                        : 'Posisikan dokumen · Ketuk shutter untuk memotret',
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: Colors.white70,
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ],
           ),
           const SizedBox(height: 16),
@@ -97,7 +119,7 @@ class ScannerControls extends StatelessWidget {
                           decoration: BoxDecoration(
                             shape: BoxShape.circle,
                             border: Border.all(
-                              color: isReady
+                              color: (isReady || !autoCaptureEnabled)
                                   ? AppColors.primary
                                   : AppColors.border,
                               width: 3,
@@ -106,7 +128,7 @@ class ScannerControls extends StatelessWidget {
                           child: Container(
                             margin: const EdgeInsets.all(4),
                             decoration: BoxDecoration(
-                              color: isReady
+                              color: (isReady || !autoCaptureEnabled)
                                   ? Colors.white
                                   : AppColors.elevated,
                               shape: BoxShape.circle,

@@ -256,7 +256,7 @@ class _ScannerScreenState extends State<ScannerScreen>
               children: [
                 Positioned.fill(child: _CameraStage(controller: _controller)),
 
-                // Status chip + tombol tutup kamera (hanya saat kamera aktif).
+                // Status chip + tombol tutup kamera + toggle auto (hanya saat kamera aktif).
                 if (_controller.isCameraReady) ...[
                   Positioned(
                     top: 26,
@@ -274,6 +274,19 @@ class _ScannerScreenState extends State<ScannerScreen>
                             isReady: _controller.isDocumentReady,
                             statusText: _controller.statusText,
                           ),
+                        ),
+                        const SizedBox(width: 12),
+                        AppIconButton(
+                          icon: _controller.autoCaptureEnabled
+                              ? Icons.center_focus_strong
+                              : Icons.camera_alt_outlined,
+                          active: _controller.autoCaptureEnabled,
+                          onPressed: () {
+                            _controller.updatePlan(
+                              plan: _controller.documentPlan,
+                              autoCapture: !_controller.autoCaptureEnabled,
+                            );
+                          },
                         ),
                       ],
                     ),
